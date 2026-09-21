@@ -143,11 +143,13 @@ namespace iot {
      * Die einzige Stelle, an der eine Zeile das Gerät in Richtung Campus
      * verlässt — Datenpunkt, Logzeile und Hallo laufen alle hier durch.
      *
-     * Im Simulator ist das derselbe Weg: `serial.writeString` landet dort als
-     * `{type:'serial', sim:true}` beim Campus-Host, ganz ohne zweite Schnittstelle.
-     * Ob im Simulator überhaupt etwas fließt, entscheidet der Schalter hinter
-     * dem „+" am Übertragungsblock (Vorgabe aus); campus-seitig hängt es
-     * zusätzlich am Debug-Modus.
+     * Im Simulator kommt davon heute NICHTS beim Campus an, und das ist
+     * nachgesehen, nicht vermutet: Der MakeCode-Editor reicht an einen Host nur
+     * `simevent` weiter (pxt/webapp/src/simulator.ts), serielle Ausgaben des
+     * Simulators bleiben im Editor. Der Schalter hinter dem „+" am
+     * Übertragungsblock bleibt trotzdem — er ist der Anknüpfpunkt, sobald die
+     * Editor-Seite die Zeilen weiterreicht. Entwicklungsweg bis dahin: das
+     * echte Gerät am USB-Kabel.
      *
      * Kein `serial.writeLine`: das füllt die Zeile vor dem Zeilenende mit
      * Leerzeichen auf 32 Byte auf, und der Wert steht im Protokoll am Ende der
@@ -192,6 +194,14 @@ namespace iot {
         if (weg == IotWeg.Campus) sendeHallo()
     }
 
+    // Hinweis zu allen Blöcken hier: Textparameter haben KEINEN Vorgabewert im
+    // TypeScript (`server: string = "…"`). pxt lässt als Initialisierer nur
+    // Zahlen, null, true und false zu (pxtcompiler/emitter/emitter.ts:2252) und
+    // bricht sonst mit „only numbers, null, true and false supported as default
+    // arguments" ab — der Fehler erscheint, sobald man den Block ablegt. Was im
+    // Block vorbelegt ist, sagt `//% …defl=`; im Code ist der Parameter
+    // schlicht optional und die Funktion fängt den Leerfall ab.
+
     /**
      * Sagt, zu welchem Dashboard die Daten gehören. Über den Weg „Campus"
      * darf das Feld leer bleiben — dann nimmt der Campus den Token aus dem
@@ -206,7 +216,7 @@ namespace iot {
     //% server.defl="campus-api.calliope.cc"
     //% group="Verbindung"
     //% weight=100 blockGap=8
-    export function verbindeDashboard(token: string, server: string = "campus-api.calliope.cc"): void {
+    export function verbindeDashboard(token: string, server?: string): void {
         referenz = token ? token.trim() : ""
         if (server && server.trim() != "") serverAdresse = server.trim()
         starte()
@@ -214,6 +224,12 @@ namespace iot {
     }
 
     function sendeHallo(): void {
+        // Zwei Zeilen, weil die Referenz einen Doppelpunkt tragen darf
+        // ("R-…:W-…") und darum am Zeilenende stehen muss. Die Serveradresse
+        // sagt dem Campus, wohin er schreiben soll: Steht im Programm ein Token
+        // samt Adresse, schickt er den Punkt wörtlich dorthin, statt selbst zu
+        // entscheiden — was im Block steht, passiert auch.
+        emit(WIRE + "s:" + serverAdresse)
         emit(WIRE + "h:" + referenz)
     }
 
@@ -232,8 +248,8 @@ namespace iot {
     //% ziel.shadow="iot_ziel"
     //% group="Senden"
     //% weight=90 blockGap=8
-    export function sende(feed: string, wert: number, ziel: string = ""): void {
-        lege(feed, zahlText(wert), ziel)
+    export function sende(feed: string, wert: number, ziel?: string): void {
+        lege(feed, zahlText(wert), ziel ? ziel : "")
     }
 
     /**
@@ -250,8 +266,8 @@ namespace iot {
     //% ziel.shadow="iot_ziel"
     //% group="Senden"
     //% weight=89 blockGap=8
-    export function sendeText(feed: string, wert: string, ziel: string = ""): void {
-        lege(feed, einzeilig(wert), ziel)
+    export function sendeText(feed: string, wert: string, ziel?: string): void {
+        lege(feed, einzeilig(wert), ziel ? ziel : "")
     }
 
     /**
@@ -309,7 +325,7 @@ namespace iot {
     //% blockId=iot_bei_wert
     //% block="wenn $feed empfangen"
     //% draggableParameters="reporter"
-    //% feed.defl="pumpe"
+    //% feed.defl="temperatur"
     //% group="Empfangen"
     //% weight=80 blockGap=8
     export function beiWert(feed: string, handler: (wert: number, von: string, an: string) => void): void {
@@ -344,12 +360,12 @@ namespace iot {
     //% blockId=iot_lese_zahl
     //% block="lese $feed || von $von an $an"
     //% expandableArgumentMode="toggle"
-    //% feed.defl="pumpe"
+    //% feed.defl="temperatur"
     //% von.shadow="iot_ziel"
     //% an.shadow="iot_ziel"
     //% group="Empfangen"
     //% weight=70 blockGap=8
-    export function lese(feed: string, von: string = "", an: string = ""): number {
+    export function lese(feed: string, von?: string, an?: string): number {
         const i = suche(feldText(feed), feldText(von), feldText(an))
         if (i < 0) return 0
         return cIstZahl[i] ? cZahl[i] : 0
@@ -369,7 +385,7 @@ namespace iot {
     //% an.shadow="iot_ziel"
     //% group="Empfangen"
     //% weight=69 blockGap=8
-    export function leseText(feed: string, von: string = "", an: string = ""): string {
+    export function leseText(feed: string, von?: string, an?: string): string {
         const i = suche(feldText(feed), feldText(von), feldText(an))
         if (i < 0) return ""
         return cText[i]
