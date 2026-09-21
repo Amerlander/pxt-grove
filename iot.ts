@@ -655,6 +655,14 @@ namespace iot {
             setzeZustand(IotStatus.Verbunden)
             return
         }
+        if (art == "?") {
+            // Der Campus fragt, wer hier hängt. Das passiert, wenn er später
+            // dazukommt als das Programm — dann ist unsere Startmeldung längst
+            // verklungen. Ohne diese Antwort läuft ein geflashtes Gerät ins
+            // Leere, solange niemand den Editor öffnet.
+            sendeHallo()
+            return
+        }
         if (art == "e") {
             setzeZustand(IotStatus.Fehler)
             merkeFehler(0)
@@ -785,6 +793,49 @@ namespace iot {
      * Ein Request trägt beides: die Punkte hin, den Downlink und die Uhrzeit
      * zurück. Der AT-Ablauf ist derselbe wie bei `grove.sendToThinkSpeak`.
      */
+    // Zerlegte Serveradresse. Der Chip im Campus trägt die volle Form ein
+    // ("http://localhost:8090/api/iot/v1"), ein Kind tippt vielleicht nur den
+    // Hostnamen — beides muss zu einem AT-Request führen.
+    let adrGeprueft = ""
+    let adrHost = ""
+    let adrPort = 80
+    let adrPfad = "/api/iot/v1"
+    let adrTls = false
+
+    function zerlegeAdresse(): void {
+        if (adrGeprueft == serverAdresse && adrHost != "") return
+        adrGeprueft = serverAdresse
+        adrPort = 80
+        adrPfad = "/api/iot/v1"
+        adrTls = false
+
+        let rest = serverAdresse.trim()
+        const schema = rest.indexOf("://")
+        if (schema >= 0) {
+            const proto = rest.substr(0, schema)
+            if (proto == "https") { adrTls = true; adrPort = 443 }
+            rest = rest.substr(schema + 3, rest.length - schema - 3)
+        }
+        const schraeg = rest.indexOf("/")
+        if (schraeg >= 0) {
+            let pfad = rest.substr(schraeg, rest.length - schraeg)
+            // Ein abschließender Schrägstrich würde den Pfad im Request
+            // verdoppeln ("/api/iot/v1//ingest").
+            while (pfad.length > 1 && pfad.charAt(pfad.length - 1) == "/") {
+                pfad = pfad.substr(0, pfad.length - 1)
+            }
+            if (pfad.length > 1) adrPfad = pfad
+            rest = rest.substr(0, schraeg)
+        }
+        const doppel = rest.indexOf(":")
+        if (doppel >= 0) {
+            const p = parseFloat(rest.substr(doppel + 1, rest.length - doppel - 1))
+            if (!isNaN(p) && p > 0) adrPort = p
+            rest = rest.substr(0, doppel)
+        }
+        adrHost = rest
+    }
+
     function flushWlan(): void {
         if (!grove.wifiOK()) {
             merkeFehler(0)
@@ -811,18 +862,28 @@ namespace iot {
         }
         koerper += "]}"
 
+        zerlegeAdresse()
+        if (adrTls) {
+            // Das ESP8285 mit dieser AT-Firmware kann kein TLS. Das laut zu
+            // sagen ist die einzige brauchbare Reaktion — sonst sucht jemand
+            // den Fehler im WLAN.
+            protokolliere("https geht am WLAN-Modul nicht")
+            merkeFehler(30)
+            return
+        }
+
         grove.sendAtCmd("AT+CIPCLOSE")
         grove.waitAtResponse("OK", "ERROR", "None", 2000)
 
-        grove.sendAtCmd("AT+CIPSTART=\"TCP\",\"" + serverAdresse + "\",80")
+        grove.sendAtCmd("AT+CIPSTART=\"TCP\",\"" + adrHost + "\"," + adrPort)
         let r = grove.waitAtResponse("OK", "ALREADY CONNECTED", "ERROR", 4000)
         if (r == 0 || r == 3) { merkeFehler(0); return }
 
         // Zeilenenden wie im Rest der Datei als Escape, nicht als echter
         // Umbruch — genau die Schreibweise, die `sendToIFTTT` schon benutzt.
         const CRLF = "\u000D\u000A"
-        const daten = "POST /api/iot/v1/ingest HTTP/1.1" + CRLF
-            + "Host: " + serverAdresse + CRLF
+        const daten = "POST " + adrPfad + "/ingest HTTP/1.1" + CRLF
+            + "Host: " + adrHost + (adrPort == 80 ? "" : ":" + adrPort) + CRLF
             + "Content-Type: application/json" + CRLF
             + "Content-Length: " + koerper.length + CRLF
             + "Connection: close" + CRLF
