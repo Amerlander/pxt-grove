@@ -157,6 +157,66 @@ basic.forever(() => {
 })
 ```
 
+### IoT — Calliope Campus dashboards
+
+Blocks in the `iot` namespace send measurements to a Campus IoT dashboard and
+receive values back. German block text, German API names — the extension is
+written for German classrooms.
+
+Two transports, one line protocol:
+
+* **Campus** (default) — `serial.writeLine`-style lines over the USB/BLE link to
+  the open Campus tab. No token in the program, no WLAN module, no
+  `serial.redirect`; the Campus tab knows both the token and the device.
+* **WLAN** — the Grove UART WiFi module, `POST /api/iot/v1/ingest` over AT. Needs
+  a write token in the program. Reuses `grove.setupWifi` and the package's AT
+  helpers.
+
+In the simulator the Campus transport works unchanged — MakeCode posts simulated
+serial output to the host page. The `+` on the transport block turns that on; it
+is off by default.
+
+```blocks
+iot.uebertragung(IotWeg.Campus)
+iot.verbindeDashboard("klassen-garten")
+
+basic.forever(function () {
+    iot.sende("temperatur", input.temperature())
+    basic.pause(5000)
+})
+
+iot.beiWert("pumpe", function (wert, von, an) {
+    basic.showNumber(wert)
+})
+```
+
+| Block | What it does |
+| --- | --- |
+| `iot.uebertragung(art, sim?)` | Chooses the transport: `IotWeg.Campus` or `IotWeg.WLAN`. Without it, Campus applies. The `sim` switch behind the `+` allows sending from the simulator (default off). |
+| `iot.verbindeDashboard(token, server?)` | Token (`R-…`, `W-…`, `R-…:W-…`) or dashboard slug. May stay empty on the Campus transport. |
+| `iot.sende(feed, wert, ziel?)` | Queues a number. |
+| `iot.sendeText(feed, wert, ziel?)` | Queues a text. Separate block because pxt has no union types. |
+| `iot.sendeJetzt()` | Flushes the queue now instead of waiting for the 5 s tick. |
+| `iot.beiWert(feed, handler)` | Runs when a number arrives; `wert`, `von`, `an` are draggable reporters. |
+| `iot.beiText(feed, handler)` | The same for text. |
+| `iot.lese(feed, von?, an?)` | Last known number. Reads the RAM cache, never the network — safe inside a loop. |
+| `iot.leseText(feed, von?, an?)` | Last known text. |
+| `iot.protokolliere(text)` | A log line for the Campus monitor (Campus transport only). |
+| `iot.status()` | `IotStatus.Getrennt` / `Verbunden` / `Sendet` / `Fehler`. |
+| `iot.meineGeraeteId()` | The device's five-letter name, the same one the Campus connection bar shows. |
+| `iot.zeitBekannt()` | False until the server has sent the time. |
+| `iot.uhrzeit()` `iot.stunde()` `iot.minute()` `iot.sekunde()` `iot.datum()` `iot.zeitstempel()` | Clock, learned from the server response. `--:--` while unknown, so a clock program never shows 1970. |
+
+**Addressing.** `ziel`, `von` and `an` are strings: empty means everyone, `"0"`
+means the dashboard, anything else is a device name. The hidden `iot_ziel`
+dropdown sits in those fields so children pick the words "alle" and "Dashboard"
+instead of the codes. There is no `-1`.
+
+**Behind the blocks.** `sende` never transmits immediately: it appends to a
+24-entry ring buffer (oldest dropped on overflow) that a `control.inBackground`
+fiber flushes every 5 seconds. A failed WLAN request backs off 1 s, 2 s, 4 s …
+up to 30 s, and a `retry_after` from the server always wins.
+
 ## License
 
 MIT

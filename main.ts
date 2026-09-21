@@ -862,7 +862,9 @@ namespace grove {
         }
     }
 
-    function waitAtResponse(target1: string, target2: string, target3: string, timeout: number) {
+    // Exported (no block annotation, so it stays out of the toolbox) so the
+    // iot namespace can drive the same AT stack instead of building a second one.
+    export function waitAtResponse(target1: string, target2: string, target3: string, timeout: number) {
         let buffer = ""
         let start = input.runningTime()
 
@@ -879,7 +881,8 @@ namespace grove {
         return 0
     }
 
-    function sendAtCmd(cmd: string) {
+    // Exported for the iot namespace — see waitAtResponse above.
+    export function sendAtCmd(cmd: string) {
         serial.writeString(cmd + "\u000D\u000A")
     }
 }
