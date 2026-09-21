@@ -9,6 +9,8 @@
     "files": [
         "README.md",
         "main.ts",
+        "iotdap.cpp",
+        "iotdap.ts",
         "iot.ts",
         "_locales/de/grove-strings.json",
         "_locales/uk/grove-strings.json"

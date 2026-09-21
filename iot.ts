@@ -3,10 +3,20 @@
  *
  * Zwei Wege, ein Protokoll (siehe calliope-campus/src/lib/services/iot/wire.ts):
  *
- *   Campus (Vorgabe)  serielle Leitung zum Verbindungs-Widget im Campus-Tab.
- *                     Der Campus kennt Token und Seriennummer, das Programm
- *                     braucht beides nicht. `serial.redirect` wird hier NIE
- *                     aufgerufen — die USB-Leitung ist das Rohr.
+ *   Campus (Vorgabe)  zum Verbindungs-Widget im Campus-Tab. Der Campus kennt
+ *                     Token und Seriennummer, das Programm braucht beides
+ *                     nicht. `serial.redirect` wird hier NIE aufgerufen.
+ *                     Dieser Weg hat zwei Rohre, und das Gerät kann nicht
+ *                     sehen, welches gerade benutzt wird:
+ *                       USB  RAM-Ablage (iotdap.ts) — der Host liest und
+ *                            schreibt eine Struktur in unserem Speicher über
+ *                            den Debug-Port. Die serielle Leitung war dafür
+ *                            unzuverlässig: In ihren 20 Byte Empfangspuffer
+ *                            passt nicht einmal eine ganze Protokollzeile, und
+ *                            ihn zu vergrößern hat das Senden zerschossen.
+ *                       BLE  serielle Leitung, wie gehabt.
+ *                     Jede Zeile geht in BEIDE Rohre; der Host nimmt je
+ *                     Verbindung eines und überhört das andere.
  *   WLAN              Grove UART-WiFi-Modul, HTTP POST auf /api/iot/v1/ingest.
  *                     Braucht einen Schreibtoken im Programm.
  *
@@ -100,6 +110,20 @@ namespace iot {
     const BATCH_MAX = 8
     const CACHE_MAX = 16
     const EMPFANG_MAX = 8
+
+    // RAM-Ablage (iotdap.ts). Ein Platz je Richtung, eine Zeile je Platz.
+    // Höchstens 5 × 2 ms Warten je Zeile, wenn der Host den Platz noch nicht
+    // geleert hat — zusammen mit den gut 3 ms, die das serielle Schreiben der
+    // vorigen Zeile ohnehin gedauert hat, reicht das für einen Host, der im
+    // Millisekundentakt nachsieht. Wer langsamer nachsieht, verliert Zeilen
+    // statt das Programm auszubremsen.
+    const ABLAGE_VERSUCHE = 5
+    const ABLAGE_WARTE_MS = 2
+    // So viele Zeilen werden je Runde des Hintergrund-Fibers abgeholt. Meist
+    // liegt nur eine da (der Host legt erst nach unserem Freigeben nach); die
+    // Schranke hält den Fiber davon ab, an einem sehr schnellen Host hängen zu
+    // bleiben, statt zwischendurch zu senden.
+    const ABLAGE_JE_RUNDE = 4
 
     // Vorgabe-Sendetakt. Veränderbar über den Dashboard-Block; `taktMs` ist der
     // Wert, der wirklich gilt.
@@ -204,8 +228,44 @@ namespace iot {
      */
     function emit(zeile: string): void {
         if (istSimulator() && !simSenden) return
+        // Beides, und zwar immer: Das Gerät kann nicht erkennen, ob am anderen
+        // Ende ein USB-Kabel oder eine BLE-Strecke hängt. Der Host entscheidet
+        // je Verbindung, welches Rohr er liest — über USB die RAM-Ablage (und
+        // überhört die IOT-Zeilen auf der seriellen Leitung), über BLE
+        // umgekehrt. Doppelt zu schreiben kostet fast nichts: Ohne lauschenden
+        // Host ist die Ablage ein memcpy in den eigenen Speicher.
+        //
+        // Die Ablage zuerst: Das Schreiben auf die serielle Leitung blockiert
+        // bis die Bytes draußen sind (bei 115200 Baud gute 3 ms je Zeile) und
+        // gibt dem Host damit von selbst die Zeit, die Ablage zu leeren, bevor
+        // die nächste Zeile kommt.
+        legeInAblage(zeile)
         serial.writeString(zeile)
         serial.writeString("\r\n")
+    }
+
+    /**
+     * Legt eine Zeile in die RAM-Ablage. Der Platz fasst genau eine Zeile: Wer
+     * schreibt, muss warten, bis der Host die vorige geholt hat.
+     *
+     * Gewartet wird nur, wenn überhaupt jemand abholt. Sonst wäre der erste
+     * belegte Platz ein Dauerzustand — niemand holt etwas — und jede einzelne
+     * Zeile eines Schülerprogramms hinge kurz fest, ohne dass das irgendwem
+     * nützte.
+     */
+    function legeInAblage(zeile: string): void {
+        if (iotdap.schreibe(zeile)) return
+        if (!iotdap.hoertJemandZu()) return
+        // Ein Host, der zuhört, hat die vorige Zeile in wenigen Millisekunden
+        // geholt. Ohne dieses kurze Warten ginge beim Leeren des Sendepuffers
+        // (bis zu 24 Zeilen hintereinander) alles bis auf die erste verloren.
+        for (let versuch = 0; versuch < ABLAGE_VERSUCHE; versuch++) {
+            basic.pause(ABLAGE_WARTE_MS)
+            if (iotdap.schreibe(zeile)) return
+        }
+        // Aufgegeben. Über USB fehlt diese eine Zeile — besser als ein Programm,
+        // das an einem zähen Rückkanal hängen bleibt. Auf die serielle Leitung
+        // geht sie gleich danach ohnehin noch raus.
     }
 
     /**
@@ -357,8 +417,10 @@ namespace iot {
 
     /**
      * Schreibt eine Zeile ins Campus-Protokoll. Über den Weg „WLAN" gehört die
-     * serielle Leitung dem Funkmodul, dort passiert bis auf Weiteres nichts —
-     * der Rückkanal dafür ist die RAM-Ablage (Stufe F des Plans).
+     * serielle Leitung dem Funkmodul, dort passiert bis auf Weiteres nichts.
+     * Die RAM-Ablage (iotdap.ts) gäbe es zwar auch dort — sie hängt nicht an
+     * der seriellen Leitung —, aber der WLAN-Weg bleibt bewusst unangetastet:
+     * eine Änderung nach der anderen.
      * @param text Text fürs Protokoll
      */
     //% blockId=iot_protokolliere
@@ -690,23 +752,27 @@ namespace iot {
         if (gestartet) return
         gestartet = true
 
-        // NUR der Empfangspuffer. Er fasst per Vorgabe 20 Byte
-        // (CODAL_SERIAL_DEFAULT_BUFFER_SIZE) und ist damit kleiner als eine
-        // einzige Uhrzeitzeile ("IOT1:t:1790016481:120" = 21) — ankommende
-        // Zeilen wurden schlicht abgeschnitten.
+        // Hier stand `serial.setRxBufferSize(128)`. Es ist absichtlich weg.
         //
-        // `setTxBufferSize` steht hier bewusst NICHT: Damit verstummte das Gerät
-        // vollständig, keine Anmeldung und keine Datenzeile mehr. Gesendet wird
-        // ohnehin blockierend, lange Zeilen gehen also auch mit kleinem Puffer
-        // vollständig raus; das verstümmelte Exemplar im Log stammte aus den
-        // ersten Millisekunden nach dem Reset, bevor die USB-Seite bereit war —
-        // dagegen hilft Warten, kein größerer Puffer (siehe `halloFaellig`).
-        serial.setRxBufferSize(128)
+        // Der Grund dafür war richtig: Der Empfangspuffer fasst per Vorgabe
+        // 20 Byte (CODAL_SERIAL_DEFAULT_BUFFER_SIZE) und damit weniger als eine
+        // einzige Uhrzeitzeile ("IOT1:t:1790016481:120" = 21) — ankommende
+        // Zeilen wurden schlicht abgeschnitten. Das Mittel war es nicht: Beim
+        // Sendepuffer (`setTxBufferSize`) verstummte das Gerät vollständig, und
+        // auch der vergrößerte Empfangspuffer steht im Verdacht, das Senden
+        // gestört zu haben. Ein Verdacht, den niemand ausräumen konnte, ist bei
+        // einer Leitung, auf der alles läuft, Grund genug, ihn loszuwerden.
+        //
+        // Der Rückkanal über USB hängt nicht mehr an dieser Leitung, sondern an
+        // der RAM-Ablage (iotdap.ts) — dort passt eine Zeile ganz hinein. Über
+        // BLE bleibt die serielle Leitung der Weg, und dort gilt die 20-Byte-
+        // Grenze wieder: Lange Zeilen können abgeschnitten ankommen.
         naechsterFlushMs = control.millis() + taktMs
         hoerZu()
         control.inBackground(function () {
             while (true) {
                 basic.pause(100)
+                holeAusAblage()
                 verteileEmpfang()
                 if (halloFaellig) { halloFaellig = false; sendeHallo() }
                 const jetzt = control.millis()
@@ -733,6 +799,35 @@ namespace iot {
     }
 
     /**
+     * Rückkanal der RAM-Ablage — das Gegenstück zu `hoerZu` für den USB-Weg.
+     *
+     * Gefragt wird, statt geweckt zu werden: Der Host legt eine Zeile in den
+     * Speicher, ohne dass auf dem Gerät irgendetwas auslöst. Der
+     * Hintergrund-Fiber läuft ohnehin alle 100 ms, also sieht er hier nach. Das
+     * ist die Verzögerung, mit der eine Zeile vom Campus ankommt; für Sollwerte
+     * und die Uhrzeit ist sie bedeutungslos.
+     *
+     * Nur auf dem Weg „Campus", genau wie beim seriellen Rückkanal: Über WLAN
+     * kommen Antworten aus dem HTTP-Request, und ein zweiter Weg, der Werte
+     * einspeist, wäre eine stille Zusatzquelle, die niemand bestellt hat.
+     */
+    function holeAusAblage(): void {
+        if (weg != IotWeg.Campus) return
+        for (let i = 0; i < ABLAGE_JE_RUNDE; i++) {
+            let zeile = iotdap.lies()
+            if (zeile == "") return
+            // Der Vertrag sagt „eine Zeile ohne Zeilenende". Käme doch eines
+            // mit, stünde es im letzten Feld — und das letzte Feld ist der Wert.
+            while (zeile.length > 0) {
+                const letztes = zeile.charAt(zeile.length - 1)
+                if (letztes != "\n" && letztes != "\r") break
+                zeile = zeile.substr(0, zeile.length - 1)
+            }
+            empfangeZeile(zeile)
+        }
+    }
+
+    /**
      * Rückkanal der seriellen Leitung. Wird genau einmal registriert und nur,
      * wenn der Weg „Campus" gilt: über WLAN gehört die Leitung dem Modul, und
      * ein Leser hier stähle dem AT-Automaten seine Antworten.
@@ -754,14 +849,28 @@ namespace iot {
         const rest = rumpf.substr(2, rumpf.length - 2)
 
         if (art == "t") {
-            // <unixsekunden>:<zeitzone>
+            // Nur noch die Unixsekunden. Die Zeitzone kommt als eigene Zeile
+            // („z"), weil beides zusammen 21 Byte wären — eines mehr, als der
+            // serielle Empfangspuffer über BLE fasst. Ältere Hosts hängen die
+            // Zone noch mit einem Doppelpunkt an; das wird weiter gelesen.
+            let sekText = rest
             const p = rest.indexOf(":")
-            if (p < 0) return
-            const sek = parseFloat(rest.substr(0, p))
-            const tzo = parseFloat(rest.substr(p + 1, rest.length - p - 1))
+            if (p >= 0) {
+                sekText = rest.substr(0, p)
+                const tzoAlt = parseFloat(rest.substr(p + 1, rest.length - p - 1))
+                if (!isNaN(tzoAlt)) uhrZoneMin = tzoAlt
+            }
+            const sek = parseFloat(sekText)
             if (isNaN(sek)) return
-            setzeZeit(sek, isNaN(tzo) ? 0 : tzo)
+            setzeZeit(sek, uhrZoneMin)
             setzeZustand(IotStatus.Verbunden)
+            return
+        }
+        if (art == "z") {
+            // Zeitzone in Minuten. Kann vor oder nach der Uhrzeit eintreffen,
+            // darum verstellt sie nur den Versatz und nicht die Uhr selbst.
+            const zone = parseFloat(rest)
+            if (!isNaN(zone)) uhrZoneMin = zone
             return
         }
         if (art == "?") {
