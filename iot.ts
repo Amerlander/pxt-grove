@@ -142,6 +142,8 @@ namespace iot {
     let zustand = IotStatus.Getrennt
 
     let naechsterFlushMs = 0
+    // Zeitpunkt der letzten Sendung — der Boden zwischen zwei Sendungen.
+    let letzterSendeMs = 0
     let naechsterVersuchMs = 0
     let backoffMs = 0
     let sofort = false
@@ -384,6 +386,13 @@ namespace iot {
         // Takt "sofort": nicht auf den nächsten Zeitpunkt warten, sondern beim
         // nächsten Schleifendurchlauf raus.
         if (taktMs == 0) sofort = true
+        // Voller Puffer schickt ebenfalls los, unabhängig vom Takt. Der Takt ist
+        // ein Versprechen über die Verzögerung, der Puffer eine Grenze für den
+        // Speicher; treffen sie aufeinander, ist ein zu früh gesendeter Wert
+        // besser als ein weggeworfener — eine Lücke im Diagramm sieht aus wie
+        // ein kaputter Sensor. Den Mindestabstand hebt das NICHT auf (siehe
+        // Schleife): „voll" erhöht die Dringlichkeit, es entfernt keinen Boden.
+        if (pFeed.length >= PUFFER_MAX) sofort = true
     }
 
     // ── Blöcke: Empfangen ────────────────────────────────────────────────────
@@ -695,7 +704,16 @@ namespace iot {
                 const jetzt = control.millis()
                 if (jetzt < naechsterVersuchMs) continue
                 if (sofort || jetzt >= naechsterFlushMs) {
+                    // Der Boden, den auch „sofort" und ein voller Puffer nicht
+                    // unterschreiten. Über WLAN wäre ein dauerhaft voller Puffer
+                    // sonst ein Dauerfeuer: Ein Request trägt 8 Punkte, der
+                    // Puffer hält 24 — wer schneller misst als sendet, bliebe
+                    // für immer voll, und aus „jede Stunde" würde unbemerkt „so
+                    // schnell der Server annimmt", mitsamt 429ern.
+                    const boden = weg == IotWeg.WLAN ? TAKT_SOFORT_WLAN_MS : 0
+                    if (jetzt < letzterSendeMs + boden) continue
                     sofort = false
+                    letzterSendeMs = jetzt
                     // Untergrenze am Ende statt bei der Einstellung: Die
                     // Blockreihenfolge ist nicht garantiert, der Weg kann nach
                     // dem Takt gesetzt worden sein.
