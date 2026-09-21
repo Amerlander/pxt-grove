@@ -549,24 +549,30 @@ namespace iot {
      * @param feed Name der Messreihe, z.B. "pumpe"
      */
     //% blockId=iot_bei_wert
-    //% block="wenn $feed von $von empfangen"
+    //% block="wenn $feed von $quelle empfangen"
     //% draggableParameters="reporter"
     //% feed.defl="temperatur"
-    //% von.shadow="iot_wer"
+    //% quelle.shadow="iot_wer"
     //% group="Empfangen"
     //% weight=80 blockGap=8
     export function beiWert(
         feed: string,
-        von: string,
+        quelle: string,
         handler: (wert: number, von: string, an: string) => void
     ): void {
         starte()
+        // Das Feld heißt `quelle` und nicht `von`, obwohl es „von" anzeigt: Der
+        // Rumpf hat mit `draggableParameters` schon einen ziehbaren Parameter
+        // `von` (wer den Wert geschickt hat). Zwei gleich benannte Eingänge an
+        // einem Block lässt Blockly nicht zu — es verwirft den ziehbaren und
+        // meldet „Ignoring non-existent input HANDLER_DRAG_PARAM_von".
+        //
         // Sichtbar im Block und nicht hinter einem „+": Dieses Feld entscheidet,
         // was überhaupt ankommt, und eine unsichtbare Vorgabe „alle" würde in
         // einer Klasse 27 fremde Messreihen in einen Auslöser schütten, der
         // nach einem Sollwert fragt. pxt verlangt außerdem, dass der
         // Rumpf-Parameter zuletzt steht — optional davor geht nicht.
-        const vonFeld = feldText(von)
+        const vonFeld = feldText(quelle)
         merkeLeseWunsch(vonFeld)
         zFeeds.push(feldText(feed))
         zVon.push(vonFeld)
@@ -578,19 +584,21 @@ namespace iot {
      * @param feed Name der Messreihe, z.B. "nachricht"
      */
     //% blockId=iot_bei_text
-    //% block="wenn Text $feed von $von empfangen"
+    //% block="wenn Text $feed von $quelle empfangen"
     //% draggableParameters="reporter"
     //% feed.defl="nachricht"
-    //% von.shadow="iot_wer"
+    //% quelle.shadow="iot_wer"
     //% group="Empfangen"
     //% weight=79 blockGap=8
     export function beiText(
         feed: string,
-        von: string,
+        quelle: string,
         handler: (text: string, von: string, an: string) => void
     ): void {
         starte()
-        const vonFeld = feldText(von)
+        // `quelle`, nicht `von` — siehe beiWert: der Rumpf hat den ziehbaren
+        // Parameter `von` schon.
+        const vonFeld = feldText(quelle)
         merkeLeseWunsch(vonFeld)
         tFeeds.push(feldText(feed))
         tVon.push(vonFeld)
