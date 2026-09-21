@@ -73,26 +73,29 @@ enum IotZiel {
 }
 
 /**
- * Wessen Werte dieses Programm lesen will.
+ * Wer gemeint ist, wenn gelesen wird — in den Feldern „von" und „an".
  *
- * Das lesende Programm entscheidet, nicht das Dashboard: auf einem Dashboard
- * liegen üblicherweise beides — ein Sollwert, den das Dashboard für alle
- * schreibt, und Messwerte, die die Minis füreinander schreiben.
+ * Eigene Liste und nicht `IotZiel`: Beim SENDEN gibt es nur zwei sinnvolle
+ * Ziele (alle, Dashboard), beim LESEN sind es fünf. Und beide Felder sind
+ * Texteingänge mit dieser Liste nur als Vorgabe davor — wer ein bestimmtes
+ * Gerät meint, zieht die Vorgabe heraus und schreibt die Geräte-ID hinein
+ * (oder steckt eine Variable an).
  *
- * „alle" schließt die eigenen Werte ein. Das ist ausdrücklich so gewollt und
- * nur hier: Wer alles will, hat einen Grund, auch das Eigene zurückzubekommen
- * (eine Anzeige, die zeigt, was gerade gesendet wurde, ohne es ein zweites Mal
- * zu speichern). Bei „andere Geräte" bleibt das Eigene draußen, sonst löst
- * `wenn … empfangen` auf der eigenen Ausgabe aus — ein Auslöser, der bei jedem
- * eigenen Wert feuert, ist kein Auslöser.
+ * „alle außer mir" gibt es, weil „andere Geräte" das Dashboard NICHT
+ * einschließt — ein Dashboard ist kein Gerät. Wer den Sollwert und die Werte
+ * der Klasse will, aber nicht sein eigenes Echo, meint diese Zeile.
  */
-enum IotLeseUmfang {
-    //% block="Dashboard"
-    Dashboard = 0,
-    //% block="andere Geräte"
-    AndereGeraete = 1,
+enum IotWer {
     //% block="alle"
-    Alle = 2
+    Alle = 0,
+    //% block="Dashboard"
+    Dashboard = 1,
+    //% block="andere Geräte"
+    AndereGeraete = 2,
+    //% block="alle außer mir"
+    AlleAusserMir = 3,
+    //% block="nur dieses Gerät"
+    NurDiesesGeraet = 4
 }
 
 /**
@@ -184,10 +187,25 @@ namespace iot {
     let referenz = ""
     let serverAdresse = "campus-api.calliope.cc"
     let geraeteId = ""
-    // Vorgabe „Dashboard": genau das, was jedes Programm ohne den Block bisher
-    // bekam. Ein geflashtes Hex überlebt jede Bereitstellung, also darf ein
-    // Programm, das nichts sagt, sein Verhalten nicht ändern.
-    let leseUmfang = IotLeseUmfang.Dashboard
+
+    // Was im Protokoll steht, wenn in einem „von"/„an"-Feld eine Vorgabe
+    // gewählt ist. Der Stern kann in keiner Geräte-ID vorkommen (fünf
+    // Buchstaben, oder „mini-…"/„sim-…" aus dem Campus), also kann eine
+    // getippte ID mit keiner Vorgabe kollidieren.
+    const WER_ALLE = ""
+    const WER_DASHBOARD = "0"
+    const WER_ANDERE = "*g"
+    const WER_OHNE_MICH = "*o"
+    const WER_ICH = "*i"
+
+    // Woraus sich das Abonnement ergibt. KEIN eigener Block dafür: Was ein
+    // Programm lesen will, steht an seinen Leseblöcken, und zweimal dasselbe
+    // zu fragen ist eine Einstellung zu viel. Die beiden Flaggen werden nur
+    // GESETZT, nie zurückgenommen — ein Programm, das an einer Stelle das
+    // Dashboard und an einer anderen die Klasse liest, braucht beides.
+    let willDashboard = false
+    let willGeraete = false
+    let angesagterUmfang = ""
 
     let gestartet = false
     let hoertZu = false
@@ -244,8 +262,10 @@ namespace iot {
     let eAn: string[] = []
 
     let zFeeds: string[] = []
+    let zVon: string[] = []
     let zHandler: ((wert: number, von: string, an: string) => void)[] = []
     let tFeeds: string[] = []
+    let tVon: string[] = []
     let tHandler: ((text: string, von: string, an: string) => void)[] = []
 
     // Uhr
@@ -496,10 +516,20 @@ namespace iot {
             pZiel.shift()
             pZeit.shift()
         }
+        const zielFeld = feldText(ziel)
         pFeed.push(schluessel)
         pWert.push(wert)
-        pZiel.push(feldText(ziel))
+        pZiel.push(zielFeld)
         pZeit.push(control.millis())
+        // Der eigene Wert geht sofort in den Zwischenspeicher, nicht erst wenn
+        // er über den Server zurückkäme. Sonst zeigt „lese tmp" direkt nach
+        // „sende tmp" den alten Wert — eine Runde über Server und nächste
+        // Anfrage später wäre er da, und genau das sieht wie ein Fehler aus.
+        // Der Server braucht eigene Zeilen deshalb nie zurückzuschicken.
+        //
+        // NUR der Zwischenspeicher: `wenn … empfangen` ist ein Auslöser für
+        // EINGEHENDE Werte und darf nicht auf der eigenen Ausgabe feuern.
+        merkeEigenen(schluessel, wert, zielFeld)
         // Takt "sofort": nicht auf den nächsten Zeitpunkt warten, sondern beim
         // nächsten Schleifendurchlauf raus.
         if (taktMs == 0) sofort = true
@@ -519,14 +549,27 @@ namespace iot {
      * @param feed Name der Messreihe, z.B. "pumpe"
      */
     //% blockId=iot_bei_wert
-    //% block="wenn $feed empfangen"
+    //% block="wenn $feed von $von empfangen"
     //% draggableParameters="reporter"
     //% feed.defl="temperatur"
+    //% von.shadow="iot_wer"
     //% group="Empfangen"
     //% weight=80 blockGap=8
-    export function beiWert(feed: string, handler: (wert: number, von: string, an: string) => void): void {
+    export function beiWert(
+        feed: string,
+        von: string,
+        handler: (wert: number, von: string, an: string) => void
+    ): void {
         starte()
+        // Sichtbar im Block und nicht hinter einem „+": Dieses Feld entscheidet,
+        // was überhaupt ankommt, und eine unsichtbare Vorgabe „alle" würde in
+        // einer Klasse 27 fremde Messreihen in einen Auslöser schütten, der
+        // nach einem Sollwert fragt. pxt verlangt außerdem, dass der
+        // Rumpf-Parameter zuletzt steht — optional davor geht nicht.
+        const vonFeld = feldText(von)
+        merkeLeseWunsch(vonFeld)
         zFeeds.push(feldText(feed))
+        zVon.push(vonFeld)
         zHandler.push(handler)
     }
 
@@ -535,44 +578,77 @@ namespace iot {
      * @param feed Name der Messreihe, z.B. "nachricht"
      */
     //% blockId=iot_bei_text
-    //% block="wenn Text $feed empfangen"
+    //% block="wenn Text $feed von $von empfangen"
     //% draggableParameters="reporter"
     //% feed.defl="nachricht"
+    //% von.shadow="iot_wer"
     //% group="Empfangen"
     //% weight=79 blockGap=8
-    export function beiText(feed: string, handler: (text: string, von: string, an: string) => void): void {
+    export function beiText(
+        feed: string,
+        von: string,
+        handler: (text: string, von: string, an: string) => void
+    ): void {
         starte()
+        const vonFeld = feldText(von)
+        merkeLeseWunsch(vonFeld)
         tFeeds.push(feldText(feed))
+        tVon.push(vonFeld)
         tHandler.push(handler)
     }
 
     /**
-     * Legt fest, wessen Werte ankommen sollen. Ohne diesen Block kommen nur
-     * Werte vom Dashboard.
-     *
-     * Wirkt auf beides gleich: `wenn … empfangen` und `lese`. Was nicht
-     * ankommt, steht auch nicht im Zwischenspeicher.
-     * @param umfang Dashboard, andere Geräte oder alle
+     * Übersetzt die Vorgabe eines „von"/„an"-Feldes in das, was im Protokoll
+     * steht. Versteckt, weil der Baustein nur als Vorlage in den Feldern sitzt
+     * — herausgezogen bleibt ein gewöhnlicher Texteingang, in den eine
+     * Geräte-ID oder eine Variable passt.
      */
-    //% blockId=iot_lese_umfang
-    //% block="lese Werte von $umfang"
-    //% group="Empfangen"
-    //% weight=75 blockGap=8
-    export function setzeLeseUmfang(umfang: IotLeseUmfang): void {
-        leseUmfang = umfang
-        starte()
-        hoerZu()
-        // Der Campus muss es erfahren, sonst filtert der Server weiter nach der
-        // alten Frage. Über die Anmeldung, damit auch eine Sonde („?") die
-        // Antwort erneut mitschickt.
-        if (weg == IotWeg.Campus) halloFaellig = true
+    //% blockId=iot_wer
+    //% block="$wer"
+    //% blockHidden=true
+    //% weight=1
+    export function werCode(wer: IotWer): string {
+        if (wer == IotWer.Dashboard) return WER_DASHBOARD
+        if (wer == IotWer.AndereGeraete) return WER_ANDERE
+        if (wer == IotWer.AlleAusserMir) return WER_OHNE_MICH
+        if (wer == IotWer.NurDiesesGeraet) return WER_ICH
+        return WER_ALLE
+    }
+
+    /**
+     * Merkt sich, was ein Leseblock haben will, und sagt es dem Campus.
+     *
+     * Das Abonnement ergibt sich daraus — es gibt keinen Block, der es
+     * getrennt einstellt. Ein Feld, das auf „nur dieses Gerät" steht, braucht
+     * gar kein Abonnement: die eigenen Werte stehen schon beim Senden im
+     * Zwischenspeicher.
+     */
+    function merkeLeseWunsch(von: string): void {
+        if (von == WER_ICH) return
+        if (von == WER_DASHBOARD) willDashboard = true
+        else if (von == WER_ANDERE) willGeraete = true
+        else if (von == WER_ALLE || von == WER_OHNE_MICH) { willDashboard = true; willGeraete = true }
+        // Eine getippte Geräte-ID: ein Gerät ist ein Gerät.
+        else willGeraete = true
+        sageUmfangAn()
     }
 
     /** Der Buchstabe, der im Protokoll und im WLAN-Request steht. */
     function umfangCode(): string {
-        if (leseUmfang == IotLeseUmfang.AndereGeraete) return "g"
-        if (leseUmfang == IotLeseUmfang.Alle) return "a"
+        if (willDashboard && willGeraete) return "a"
+        if (willGeraete) return "g"
         return "d"
+    }
+
+    function sageUmfangAn(): void {
+        const code = umfangCode()
+        if (code == angesagterUmfang) return
+        angesagterUmfang = code
+        starte()
+        hoerZu()
+        // Über die Anmeldung, damit auch eine Sonde („?") die Antwort erneut
+        // mitschickt. Der Server filtert sonst weiter nach der alten Frage.
+        if (weg == IotWeg.Campus) halloFaellig = true
     }
 
     /**
@@ -586,12 +662,14 @@ namespace iot {
     //% block="lese $feed || von $von an $an"
     //% expandableArgumentMode="toggle"
     //% feed.defl="temperatur"
-    //% von.shadow="iot_ziel"
-    //% an.shadow="iot_ziel"
+    //% von.shadow="iot_wer"
+    //% an.shadow="iot_wer"
     //% group="Empfangen"
     //% weight=70 blockGap=8
     export function lese(feed: string, von?: string, an?: string): number {
-        const i = suche(feldText(feed), feldText(von), feldText(an))
+        const vonFeld = feldText(von)
+        merkeLeseWunsch(vonFeld)
+        const i = suche(feldText(feed), vonFeld, feldText(an))
         if (i < 0) return 0
         return cIstZahl[i] ? cZahl[i] : 0
     }
@@ -606,12 +684,14 @@ namespace iot {
     //% block="lese Text $feed || von $von an $an"
     //% expandableArgumentMode="toggle"
     //% feed.defl="nachricht"
-    //% von.shadow="iot_ziel"
-    //% an.shadow="iot_ziel"
+    //% von.shadow="iot_wer"
+    //% an.shadow="iot_wer"
     //% group="Empfangen"
     //% weight=69 blockGap=8
     export function leseText(feed: string, von?: string, an?: string): string {
-        const i = suche(feldText(feed), feldText(von), feldText(an))
+        const vonFeld = feldText(von)
+        merkeLeseWunsch(vonFeld)
+        const i = suche(feldText(feed), vonFeld, feldText(an))
         if (i < 0) return ""
         return cText[i]
     }
@@ -1030,6 +1110,25 @@ namespace iot {
     // ── Zwischenspeicher und Handler ─────────────────────────────────────────
 
     /**
+     * Trifft ein „von"/„an"-Feld auf diesen Absender bzw. Empfänger zu?
+     *
+     * Ein leeres Feld heißt „alle" und trifft immer. Die Sternvorgaben werden
+     * gegen die eigene Geräte-ID gerechnet; alles andere ist eine getippte ID
+     * und wird genau verglichen.
+     *
+     * „nur dieses Gerät" im Feld „an" meint AUSDRÜCKLICH adressiert: eine
+     * Rundsendung (`an` leer) trifft nicht zu, obwohl sie auch an dieses Gerät
+     * ging. Sonst wäre „an mich" von „an alle" nicht zu unterscheiden.
+     */
+    function passt(muster: string, wert: string): boolean {
+        if (muster == WER_ALLE) return true
+        if (muster == WER_ICH) return wert == meineGeraeteId()
+        if (muster == WER_OHNE_MICH) return wert != meineGeraeteId()
+        if (muster == WER_ANDERE) return wert != meineGeraeteId() && wert != WER_DASHBOARD
+        return wert == muster
+    }
+
+    /**
      * Der passende Eintrag, und zwar der NEUESTE. Ohne Absenderfilter treffen
      * bei „andere Geräte" mehrere Plätze zu; „der erste im Feld" wäre dann der
      * am längsten unveränderte — also gerade der falsche.
@@ -1038,14 +1137,32 @@ namespace iot {
         let treffer = -1
         for (let i = 0; i < cFeed.length; i++) {
             if (cFeed[i] != feed) continue
-            if (von != "" && cVon[i] != von) continue
-            if (an != "" && cAn[i] != an) continue
+            if (!passt(von, cVon[i])) continue
+            if (!passt(an, cAn[i])) continue
             if (treffer < 0 || cZeit[i] > cZeit[treffer]) treffer = i
         }
         return treffer
     }
 
+    /**
+     * Ein selbst gesendeter Wert, damit er sofort lesbar ist. Geht NICHT in die
+     * Empfangsschlange: `wenn … empfangen` ist ein Auslöser für eingehende
+     * Werte.
+     */
+    function merkeEigenen(feed: string, roh: string, an: string): void {
+        schreibeCache(feed, roh, meineGeraeteId(), an)
+    }
+
     function nimmAn(feed: string, roh: string, von: string, an: string): void {
+        schreibeCache(feed, roh, von, an)
+
+        if (eFeed.length >= EMPFANG_MAX) {
+            eFeed.shift(); eWert.shift(); eVon.shift(); eAn.shift()
+        }
+        eFeed.push(feed); eWert.push(roh); eVon.push(von); eAn.push(an)
+    }
+
+    function schreibeCache(feed: string, roh: string, von: string, an: string): void {
         const zahl = parseFloat(roh.trim())
         const istZahl = roh.trim() != "" && !isNaN(zahl)
 
@@ -1070,11 +1187,6 @@ namespace iot {
             cIstZahl[i] = istZahl
             cZeit[i] = control.millis()
         }
-
-        if (eFeed.length >= EMPFANG_MAX) {
-            eFeed.shift(); eWert.shift(); eVon.shift(); eAn.shift()
-        }
-        eFeed.push(feed); eWert.push(roh); eVon.push(von); eAn.push(an)
     }
 
     function verteileEmpfang(): void {
@@ -1086,10 +1198,14 @@ namespace iot {
             const zahl = parseFloat(roh.trim())
             const istZahl = roh.trim() != "" && !isNaN(zahl)
             for (let i = 0; i < zFeeds.length; i++) {
-                if (zFeeds[i] == feed && istZahl) zHandler[i](zahl, von, an)
+                if (zFeeds[i] != feed || !istZahl) continue
+                if (!passt(zVon[i], von)) continue
+                zHandler[i](zahl, von, an)
             }
             for (let k = 0; k < tFeeds.length; k++) {
-                if (tFeeds[k] == feed) tHandler[k](roh, von, an)
+                if (tFeeds[k] != feed) continue
+                if (!passt(tVon[k], von)) continue
+                tHandler[k](roh, von, an)
             }
         }
     }
