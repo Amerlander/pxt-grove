@@ -29,6 +29,7 @@
  *   IOT1:d:<ziel>:<feed>:<wert>
  *   IOT1:l:<text>
  *   IOT1:h:<referenz>
+ *   IOT1:r:<umfang>            wessen Werte ankommen sollen: d|g|a
  * Zeilenformat Campus → Gerät
  *   IOT1:v:<von>:<an>:<feed>:<wert>
  *   IOT1:t:<unixsekunden>:<zeitzone in minuten>
@@ -69,6 +70,29 @@ enum IotZiel {
     Alle = 0,
     //% block="Dashboard"
     Dashboard = 1
+}
+
+/**
+ * Wessen Werte dieses Programm lesen will.
+ *
+ * Das lesende Programm entscheidet, nicht das Dashboard: auf einem Dashboard
+ * liegen üblicherweise beides — ein Sollwert, den das Dashboard für alle
+ * schreibt, und Messwerte, die die Minis füreinander schreiben.
+ *
+ * „alle" schließt die eigenen Werte ein. Das ist ausdrücklich so gewollt und
+ * nur hier: Wer alles will, hat einen Grund, auch das Eigene zurückzubekommen
+ * (eine Anzeige, die zeigt, was gerade gesendet wurde, ohne es ein zweites Mal
+ * zu speichern). Bei „andere Geräte" bleibt das Eigene draußen, sonst löst
+ * `wenn … empfangen` auf der eigenen Ausgabe aus — ein Auslöser, der bei jedem
+ * eigenen Wert feuert, ist kein Auslöser.
+ */
+enum IotLeseUmfang {
+    //% block="Dashboard"
+    Dashboard = 0,
+    //% block="andere Geräte"
+    AndereGeraete = 1,
+    //% block="alle"
+    Alle = 2
 }
 
 /**
@@ -160,6 +184,10 @@ namespace iot {
     let referenz = ""
     let serverAdresse = "campus-api.calliope.cc"
     let geraeteId = ""
+    // Vorgabe „Dashboard": genau das, was jedes Programm ohne den Block bisher
+    // bekam. Ein geflashtes Hex überlebt jede Bereitstellung, also darf ein
+    // Programm, das nichts sagt, sein Verhalten nicht ändern.
+    let leseUmfang = IotLeseUmfang.Dashboard
 
     let gestartet = false
     let hoertZu = false
@@ -182,13 +210,30 @@ namespace iot {
     let pZiel: string[] = []
     let pZeit: number[] = []
 
-    // Zuletzt bekannter Wert je Feed. `lese` liest hier, nie im Netz.
+    // Zuletzt bekannter Wert je (Feed, Absender, Empfänger). `lese` liest hier,
+    // nie im Netz.
+    //
+    // Der Schlüssel ist das Tripel und nicht der Feed allein. Vorher gab es
+    // genau einen Platz je Feed, dessen Absender der jeweils letzte Schreiber
+    // überschrieb — `suche` filtert aber nach Feed UND Absender, also lieferte
+    // `lese "temperatur" von <Gerät>` eine 0, sobald irgendein anderes Gerät
+    // zuletzt geschrieben hatte. Solange nur das Dashboard schrieb, fiel das
+    // nicht auf: ein Absender, ein Platz.
+    //
+    // Mit „andere Geräte" belegt jedes sendende Gerät einen eigenen Platz. Bei
+    // CACHE_MAX fliegt der älteste Eintrag — in einer großen Klasse kann das
+    // ein Gerät sein, das noch gebraucht wird. Das ist die bewusste Grenze:
+    // Speicher auf dem mini ist knapper als Vollständigkeit wertvoll ist.
     let cFeed: string[] = []
     let cText: string[] = []
     let cZahl: number[] = []
     let cIstZahl: boolean[] = []
     let cVon: string[] = []
     let cAn: string[] = []
+    // Wann der Eintrag zuletzt geschrieben wurde. Damit `lese` ohne
+    // Absenderfilter den NEUESTEN Treffer liefert und nicht den, der zufällig
+    // vorne im Feld steht.
+    let cZeit: number[] = []
 
     // Empfangene Werte warten hier auf den Hintergrund-Fiber. Direkt aus dem
     // Serial-Fiber heraus aufzurufen wäre bequemer, aber ein `zeige Zahl` im
@@ -351,6 +396,12 @@ namespace iot {
     }
 
     function sendeHallo(): void {
+        // Der Lese-Umfang geht VOR der Referenzprüfung raus. Über den Weg
+        // „Campus" darf das Dashboard-Feld leer bleiben — dann nimmt der Campus
+        // die Referenz aus dem geöffneten Programm —, aber die Frage „wessen
+        // Werte will ich?" kann nur dieses Programm beantworten. Hinter dem
+        // `return` unten wäre sie in genau dem Fall verloren.
+        emit(WIRE + "r:" + umfangCode())
         // Nichts sagen, solange nichts zu sagen ist. `uebertragung` läuft im
         // Blockstapel VOR `verbindeDashboard`; meldete es sich schon hier an,
         // bekäme der Campus zuerst eine leere Referenz samt Vorgabeserver und
@@ -493,6 +544,35 @@ namespace iot {
         starte()
         tFeeds.push(feldText(feed))
         tHandler.push(handler)
+    }
+
+    /**
+     * Legt fest, wessen Werte ankommen sollen. Ohne diesen Block kommen nur
+     * Werte vom Dashboard.
+     *
+     * Wirkt auf beides gleich: `wenn … empfangen` und `lese`. Was nicht
+     * ankommt, steht auch nicht im Zwischenspeicher.
+     * @param umfang Dashboard, andere Geräte oder alle
+     */
+    //% blockId=iot_lese_umfang
+    //% block="lese Werte von $umfang"
+    //% group="Empfangen"
+    //% weight=75 blockGap=8
+    export function setzeLeseUmfang(umfang: IotLeseUmfang): void {
+        leseUmfang = umfang
+        starte()
+        hoerZu()
+        // Der Campus muss es erfahren, sonst filtert der Server weiter nach der
+        // alten Frage. Über die Anmeldung, damit auch eine Sonde („?") die
+        // Antwort erneut mitschickt.
+        if (weg == IotWeg.Campus) halloFaellig = true
+    }
+
+    /** Der Buchstabe, der im Protokoll und im WLAN-Request steht. */
+    function umfangCode(): string {
+        if (leseUmfang == IotLeseUmfang.AndereGeraete) return "g"
+        if (leseUmfang == IotLeseUmfang.Alle) return "a"
+        return "d"
     }
 
     /**
@@ -949,37 +1029,46 @@ namespace iot {
 
     // ── Zwischenspeicher und Handler ─────────────────────────────────────────
 
+    /**
+     * Der passende Eintrag, und zwar der NEUESTE. Ohne Absenderfilter treffen
+     * bei „andere Geräte" mehrere Plätze zu; „der erste im Feld" wäre dann der
+     * am längsten unveränderte — also gerade der falsche.
+     */
     function suche(feed: string, von: string, an: string): number {
+        let treffer = -1
         for (let i = 0; i < cFeed.length; i++) {
             if (cFeed[i] != feed) continue
             if (von != "" && cVon[i] != von) continue
             if (an != "" && cAn[i] != an) continue
-            return i
+            if (treffer < 0 || cZeit[i] > cZeit[treffer]) treffer = i
         }
-        return -1
+        return treffer
     }
 
     function nimmAn(feed: string, roh: string, von: string, an: string): void {
         const zahl = parseFloat(roh.trim())
         const istZahl = roh.trim() != "" && !isNaN(zahl)
 
+        // Das Tripel ist der Schlüssel: zwei Geräte, die denselben Feed
+        // schreiben, sind zwei Einträge und nicht einer, der hin und her
+        // kippt.
         let i = -1
         for (let k = 0; k < cFeed.length; k++) {
-            if (cFeed[k] == feed) { i = k; break }
+            if (cFeed[k] == feed && cVon[k] == von && cAn[k] == an) { i = k; break }
         }
         if (i < 0) {
             if (cFeed.length >= CACHE_MAX) {
                 cFeed.shift(); cText.shift(); cZahl.shift()
-                cIstZahl.shift(); cVon.shift(); cAn.shift()
+                cIstZahl.shift(); cVon.shift(); cAn.shift(); cZeit.shift()
             }
             cFeed.push(feed); cText.push(roh); cZahl.push(istZahl ? zahl : 0)
             cIstZahl.push(istZahl); cVon.push(von); cAn.push(an)
+            cZeit.push(control.millis())
         } else {
             cText[i] = roh
             cZahl[i] = istZahl ? zahl : 0
             cIstZahl[i] = istZahl
-            cVon[i] = von
-            cAn[i] = an
+            cZeit[i] = control.millis()
         }
 
         if (eFeed.length >= EMPFANG_MAX) {
@@ -1063,9 +1152,15 @@ namespace iot {
 
         const anzahl = Math.min(pFeed.length, BATCH_MAX)
         const jetzt = control.millis()
+        // `scope` steht auch hier, nicht nur auf der Campus-Leitung: Der
+        // Campus-Tab schickt dasselbe Feld weiter, wenn er wörtlich
+        // weiterleitet. Beide Wege müssen für dasselbe Programm dieselbe
+        // Antwort erzeugen, sonst verhält sich ein hier getestetes Programm
+        // anders, sobald das WLAN-Modul dran ist.
         let koerper = "{\"t\":" + jsonText(referenz)
             + ",\"dev\":" + jsonText(meineGeraeteId())
             + ",\"now\":" + jetzt
+            + ",\"scope\":" + jsonText(umfangCode())
             + ",\"d\":["
         for (let i = 0; i < anzahl; i++) {
             if (i > 0) koerper += ","
