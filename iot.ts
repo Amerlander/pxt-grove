@@ -62,6 +62,26 @@ enum IotZiel {
 }
 
 /**
+ * Wie oft gesammelte Werte losgeschickt werden.
+ *
+ * Gesammelt wird immer — `sende` legt in einen Ringpuffer, und was hier steht,
+ * ist nur der Takt, in dem er geleert wird. „Sofort" heißt: jeder Wert geht
+ * einzeln raus, sobald er entsteht.
+ */
+enum IotTakt {
+    //% block="sofort"
+    Sofort = 0,
+    //% block="jede Sekunde"
+    Sekunde = 1000,
+    //% block="alle 5 Sekunden"
+    FuenfSekunden = 5000,
+    //% block="jede Minute"
+    Minute = 60000,
+    //% block="jede Stunde"
+    Stunde = 3600000
+}
+
+/**
  * Daten an ein Campus-Dashboard senden und von dort empfangen.
  */
 //% weight=9 color=#0E7C86 icon="\uf0c2" block="IoT"
@@ -81,9 +101,30 @@ namespace iot {
     const CACHE_MAX = 16
     const EMPFANG_MAX = 8
 
+    // Vorgabe-Sendetakt. Veränderbar über den Dashboard-Block; `taktMs` ist der
+    // Wert, der wirklich gilt.
     const TAKT_MS = 5000
+    let taktMs = TAKT_MS
     const BACKOFF_START_MS = 1000
     const BACKOFF_MAX_MS = 30000
+
+    /**
+     * Wie oft der Puffer geleert wird.
+     *
+     * „Sofort" schickt jeden Wert einzeln, sobald er entsteht — über den Campus
+     * ist das billig, die serielle Leitung steht ohnehin offen. Über WLAN ist es
+     * das Gegenteil von billig: Jeder Punkt wäre ein eigener HTTP-Request, und
+     * der Server nimmt pro Gerät nur etwa einen pro Sekunde an. Darum wird
+     * „Sofort" auf dem WLAN-Weg auf eine Sekunde angehoben, statt in Fehler zu
+     * laufen.
+     *
+     * Für den Stromverbrauch bringt ein langsamerer Takt weniger, als man
+     * denkt: Das WLAN-Modul kostet im Leerlauf grob 70–100 mA, gesendet wird
+     * nur in kurzen Spitzen. Gespart wird hier Funkverkehr und Serverlast, kein
+     * nennenswerter Strom — dafür müsste das Modul schlafen, und dann empfängt
+     * es auch nichts mehr.
+     */
+    const TAKT_SOFORT_WLAN_MS = 1000
 
     // ── Zustand ──────────────────────────────────────────────────────────────
 
@@ -210,20 +251,46 @@ namespace iot {
      * @param server Adresse des Campus-Servers
      */
     //% blockId=iot_verbinde_dashboard
-    //% block="Dashboard $token || Server $server"
+    //% block="Dashboard $token || Server $server senden $takt"
     //% expandableArgumentMode="toggle"
     //% token.defl=""
     //% server.defl="campus-api.calliope.cc"
+    //% takt.defl=IotTakt.FuenfSekunden
     //% group="Verbindung"
     //% weight=100 blockGap=8
-    export function verbindeDashboard(token: string, server?: string): void {
+    export function verbindeDashboard(token: string, server?: string, takt?: IotTakt): void {
         referenz = token ? token.trim() : ""
         if (server && server.trim() != "") serverAdresse = server.trim()
+        setzeTakt(takt)
         starte()
         if (weg == IotWeg.Campus) sendeHallo()
     }
 
+    /**
+     * Übernimmt den gewählten Takt. `undefined` heißt „nicht angegeben" — dann
+     * bleibt es beim bisherigen Wert, sonst würde ein zugeklapptes „+" die
+     * Einstellung eines zweiten Blocks stillschweigend zurücksetzen.
+     */
+    function setzeTakt(takt?: IotTakt): void {
+        if (takt == undefined) return
+        if (takt == IotTakt.Sofort) {
+            // Über WLAN ist „sofort" ein Versprechen, das der Server nicht
+            // einlöst: Er nimmt pro Gerät etwa einen Batch je Sekunde an. Also
+            // hier begrenzen, statt das Kind gegen 429er laufen zu lassen.
+            taktMs = weg == IotWeg.WLAN ? TAKT_SOFORT_WLAN_MS : 0
+        } else {
+            taktMs = takt as number
+        }
+        naechsterFlushMs = control.millis() + taktMs
+    }
+
     function sendeHallo(): void {
+        // Nichts sagen, solange nichts zu sagen ist. `uebertragung` läuft im
+        // Blockstapel VOR `verbindeDashboard`; meldete es sich schon hier an,
+        // bekäme der Campus zuerst eine leere Referenz samt Vorgabeserver und
+        // müsste sich Sekundenbruchteile später korrigieren lassen — in der
+        // Zwischenzeit weiß er nicht, wohin mit den Daten.
+        if (referenz == "") return
         // Zwei Zeilen, weil die Referenz einen Doppelpunkt tragen darf
         // ("R-…:W-…") und darum am Zeilenende stehen muss. Die Serveradresse
         // sagt dem Campus, wohin er schreiben soll: Steht im Programm ein Token
@@ -314,6 +381,9 @@ namespace iot {
         pWert.push(wert)
         pZiel.push(feldText(ziel))
         pZeit.push(control.millis())
+        // Takt "sofort": nicht auf den nächsten Zeitpunkt warten, sondern beim
+        // nächsten Schleifendurchlauf raus.
+        if (taktMs == 0) sofort = true
     }
 
     // ── Blöcke: Empfangen ────────────────────────────────────────────────────
@@ -606,7 +676,17 @@ namespace iot {
     function starte(): void {
         if (gestartet) return
         gestartet = true
-        naechsterFlushMs = control.millis() + TAKT_MS
+
+        // Der serielle Puffer fasst per Vorgabe 20 Byte
+        // (CODAL_SERIAL_DEFAULT_BUFFER_SIZE). Unsere Zeilen sind länger:
+        // "IOT1:t:1790016481:120" allein sind 21, und die Serveradresse
+        // "IOT1:s:http://localhost:8090/api/iot/v1" gut 40. Was nicht
+        // hineinpasst, geht verloren — in die eine Richtung als verstümmelte
+        // Ausgabe, in die andere als Zeile, die nie ankommt. Das ist der
+        // Unterschied zwischen „liest nichts" und „liest".
+        serial.setRxBufferSize(128)
+        serial.setTxBufferSize(128)
+        naechsterFlushMs = control.millis() + taktMs
         hoerZu()
         control.inBackground(function () {
             while (true) {
@@ -616,7 +696,10 @@ namespace iot {
                 if (jetzt < naechsterVersuchMs) continue
                 if (sofort || jetzt >= naechsterFlushMs) {
                     sofort = false
-                    naechsterFlushMs = jetzt + TAKT_MS
+                    // Untergrenze am Ende statt bei der Einstellung: Die
+                    // Blockreihenfolge ist nicht garantiert, der Weg kann nach
+                    // dem Takt gesetzt worden sein.
+                    naechsterFlushMs = jetzt + (weg == IotWeg.WLAN && taktMs < TAKT_SOFORT_WLAN_MS ? TAKT_SOFORT_WLAN_MS : taktMs)
                     flush()
                 }
             }
