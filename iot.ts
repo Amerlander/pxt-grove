@@ -147,6 +147,10 @@ namespace iot {
     let naechsterVersuchMs = 0
     let backoffMs = 0
     let sofort = false
+    // Anmeldung steht aus. Sie wird NICHT synchron beim Start geschickt: In den
+    // ersten Millisekunden nach dem Reset ist die USB-Seite noch nicht bereit,
+    // und genau dort entstand die verstümmelte Zeile im Log.
+    let halloFaellig = false
 
     // Sendepuffer (parallele Felder statt Objekten: kein Allozieren je Punkt)
     let pFeed: string[] = []
@@ -234,7 +238,7 @@ namespace iot {
         simSenden = sim
         starte()
         hoerZu()
-        if (weg == IotWeg.Campus) sendeHallo()
+        if (weg == IotWeg.Campus) halloFaellig = true
     }
 
     // Hinweis zu allen Blöcken hier: Textparameter haben KEINEN Vorgabewert im
@@ -265,7 +269,7 @@ namespace iot {
         if (server && server.trim() != "") serverAdresse = server.trim()
         setzeTakt(takt)
         starte()
-        if (weg == IotWeg.Campus) sendeHallo()
+        if (weg == IotWeg.Campus) halloFaellig = true
     }
 
     /**
@@ -686,21 +690,25 @@ namespace iot {
         if (gestartet) return
         gestartet = true
 
-        // Der serielle Puffer fasst per Vorgabe 20 Byte
-        // (CODAL_SERIAL_DEFAULT_BUFFER_SIZE). Unsere Zeilen sind länger:
-        // "IOT1:t:1790016481:120" allein sind 21, und die Serveradresse
-        // "IOT1:s:http://localhost:8090/api/iot/v1" gut 40. Was nicht
-        // hineinpasst, geht verloren — in die eine Richtung als verstümmelte
-        // Ausgabe, in die andere als Zeile, die nie ankommt. Das ist der
-        // Unterschied zwischen „liest nichts" und „liest".
+        // NUR der Empfangspuffer. Er fasst per Vorgabe 20 Byte
+        // (CODAL_SERIAL_DEFAULT_BUFFER_SIZE) und ist damit kleiner als eine
+        // einzige Uhrzeitzeile ("IOT1:t:1790016481:120" = 21) — ankommende
+        // Zeilen wurden schlicht abgeschnitten.
+        //
+        // `setTxBufferSize` steht hier bewusst NICHT: Damit verstummte das Gerät
+        // vollständig, keine Anmeldung und keine Datenzeile mehr. Gesendet wird
+        // ohnehin blockierend, lange Zeilen gehen also auch mit kleinem Puffer
+        // vollständig raus; das verstümmelte Exemplar im Log stammte aus den
+        // ersten Millisekunden nach dem Reset, bevor die USB-Seite bereit war —
+        // dagegen hilft Warten, kein größerer Puffer (siehe `halloFaellig`).
         serial.setRxBufferSize(128)
-        serial.setTxBufferSize(128)
         naechsterFlushMs = control.millis() + taktMs
         hoerZu()
         control.inBackground(function () {
             while (true) {
                 basic.pause(100)
                 verteileEmpfang()
+                if (halloFaellig) { halloFaellig = false; sendeHallo() }
                 const jetzt = control.millis()
                 if (jetzt < naechsterVersuchMs) continue
                 if (sofort || jetzt >= naechsterFlushMs) {
@@ -761,7 +769,7 @@ namespace iot {
             // dazukommt als das Programm — dann ist unsere Startmeldung längst
             // verklungen. Ohne diese Antwort läuft ein geflashtes Gerät ins
             // Leere, solange niemand den Editor öffnet.
-            sendeHallo()
+            halloFaellig = true
             return
         }
         if (art == "e") {
