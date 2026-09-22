@@ -1216,6 +1216,58 @@ namespace iot {
     }
 
     /**
+     * Startet einen Block-Rumpf in einem EIGENEN Fiber.
+     *
+     * (starteGesendetRumpf / starteZahlRumpf / starteTextRumpf — drei Formen,
+     * eine Regel.)
+     *
+     * Das ist der Unterschied zwischen „der Ton spielt" und „das Gerät sendet
+     * nicht mehr". Alle Rümpfe liefen bisher im Hintergrund-Fiber — demselben,
+     * der den Sendepuffer leert und die Ablage abholt. Ein `spiele Ton bis
+     * fertig` darin hält beides an, und bei „alle" lesen kommt im Sekundentakt
+     * ein Wert herein: Die Schleife kam nie mehr zum Senden, das Gerät sah aus,
+     * als könne es nur noch empfangen.
+     *
+     * Ein Ton in einem Ereignisblock ist genau das, was ein Kind zuerst
+     * programmiert, und in MakeCode hält `wenn Knopf A gedrückt` auch nichts
+     * anderes an. Der Preis ist, dass die Reihenfolge zwischen Rumpf und
+     * weiterem Senden nicht mehr garantiert ist — für eine Rückmeldung ist das
+     * belanglos, für den Datenfluss war die Garantie es nicht wert.
+     */
+    function starteGesendetRumpf(
+        rumpf: (feed: string, wert: number, an: string) => void,
+        feed: string,
+        wert: number,
+        an: string
+    ): void {
+        control.inBackground(function () {
+            rumpf(feed, wert, an)
+        })
+    }
+
+    function starteZahlRumpf(
+        rumpf: (wert: number, von: string, an: string) => void,
+        wert: number,
+        von: string,
+        an: string
+    ): void {
+        control.inBackground(function () {
+            rumpf(wert, von, an)
+        })
+    }
+
+    function starteTextRumpf(
+        rumpf: (text: string, von: string, an: string) => void,
+        text: string,
+        von: string,
+        an: string
+    ): void {
+        control.inBackground(function () {
+            rumpf(text, von, an)
+        })
+    }
+
+    /**
      * Sagt den `wenn … gesendet`-Rümpfen Bescheid.
      *
      * Direkt aufgerufen und nicht über eine Warteschlange wie beim Empfangen:
@@ -1233,7 +1285,7 @@ namespace iot {
         for (let i = 0; i < gFeeds.length; i++) {
             // Leerer Name heißt „jeder Feed".
             if (gFeeds[i] != "" && gFeeds[i] != feed) continue
-            gHandler[i](feed, istZahl ? zahl : 0, ziel)
+            starteGesendetRumpf(gHandler[i], feed, istZahl ? zahl : 0, ziel)
         }
     }
 
@@ -1349,15 +1401,19 @@ namespace iot {
             const an = eAn.shift()
             const zahl = parseFloat(roh.trim())
             const istZahl = roh.trim() != "" && !isNaN(zahl)
+            // Auch hier ein eigener Fiber je Rumpf — siehe `starteZahlRumpf`. Die
+            // Warteschlange davor (eFeed) hielt schon den SERIELLEN Fiber frei;
+            // sie half aber nichts gegen einen Rumpf, der den Hintergrund-Fiber
+            // anhält, und genau der leert den Sendepuffer.
             for (let i = 0; i < zFeeds.length; i++) {
                 if (zFeeds[i] != feed || !istZahl) continue
                 if (!passt(zVon[i], von)) continue
-                zHandler[i](zahl, von, an)
+                starteZahlRumpf(zHandler[i], zahl, von, an)
             }
             for (let k = 0; k < tFeeds.length; k++) {
                 if (tFeeds[k] != feed) continue
                 if (!passt(tVon[k], von)) continue
-                tHandler[k](roh, von, an)
+                starteTextRumpf(tHandler[k], roh, von, an)
             }
         }
     }
