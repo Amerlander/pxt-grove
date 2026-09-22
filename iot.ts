@@ -1218,21 +1218,36 @@ namespace iot {
         if (gestartet) return
         gestartet = true
 
-        // Hier stand `serial.setRxBufferSize(128)`. Es ist absichtlich weg.
+        // Der Empfangspuffer muss eine ganze Zeile fassen — sonst kommt sie gar
+        // nicht an.
         //
-        // Der Grund dafür war richtig: Der Empfangspuffer fasst per Vorgabe
-        // 20 Byte (CODAL_SERIAL_DEFAULT_BUFFER_SIZE) und damit weniger als eine
-        // einzige Uhrzeitzeile ("IOT1:t:1790016481:120" = 21) — ankommende
-        // Zeilen wurden schlicht abgeschnitten. Das Mittel war es nicht: Beim
-        // Sendepuffer (`setTxBufferSize`) verstummte das Gerät vollständig, und
-        // auch der vergrößerte Empfangspuffer steht im Verdacht, das Senden
-        // gestört zu haben. Ein Verdacht, den niemand ausräumen konnte, ist bei
-        // einer Leitung, auf der alles läuft, Grund genug, ihn loszuwerden.
+        // Vorgabe sind 20 Byte (CODAL_SERIAL_DEFAULT_BUFFER_SIZE), und das ist
+        // weniger als eine einzige Protokollzeile. Eine überlange Zeile wird
+        // nicht gekürzt, sie wird zerstört: Der Parser findet den dritten
+        // Doppelpunkt nicht und kehrt still zurück. Gemessen an einer echten
+        // Sitzung:
         //
-        // Der Rückkanal über USB hängt nicht mehr an dieser Leitung, sondern an
-        // der RAM-Ablage (iotdap.ts) — dort passt eine Zeile ganz hinein. Über
-        // BLE bleibt die serielle Leitung der Weg, und dort gilt die 20-Byte-
-        // Grenze wieder: Lange Zeilen können abgeschnitten ankommen.
+        //   IOT1:v:0::Licht:1            17 Byte — kommt an
+        //   IOT1:v:-957520046::Licht:1   26 Byte — verschwindet wortlos
+        //
+        // Also ausgerechnet das, wofür ein Klassensatz da ist — der Wert eines
+        // minis erreicht ein anderes —, passte nicht, während die Sollwerte des
+        // Dashboards (Absender "0", ein Zeichen) weiter ankamen und die Leitung
+        // gesund aussehen ließen.
+        //
+        // WARUM DIE ZEILE SCHON EINMAL WEG WAR: `setTxBufferSize` hat das Gerät
+        // vollständig verstummen lassen, und der Verdacht fiel damals auch auf
+        // den Empfangspuffer. Bewiesen wurde das nie — es war ein Verdacht, und
+        // entfernt wurde damit die einzige Maßnahme, die das Problem behob.
+        // Über USB spielt sie ohnehin keine Rolle mehr: Dort läuft der
+        // Rückkanal über die RAM-Ablage (iotdap.ts, 64 Byte je Platz), und der
+        // Campus schickt über CMSIS-DAP ausschließlich dorthin. Bleibt BLE, wo
+        // die serielle Leitung der einzige Weg ist — und genau dort ist dieser
+        // Puffer die einzige Stelle, an der sich etwas machen lässt.
+        //
+        // NUR der Empfangspuffer. `setTxBufferSize` bleibt ungerührt: Das ist
+        // die Richtung, für die es einen belegten Ausfall gibt.
+        serial.setRxBufferSize(128)
         naechsterFlushMs = control.millis() + taktMs
         hoerZu()
         control.inBackground(function () {
