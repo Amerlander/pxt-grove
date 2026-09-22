@@ -384,17 +384,68 @@ namespace iot {
     // gibt es kein Panel, an das die Zeilen gehen könnten — der Editor erzeugt
     // das iframe erst in dem Moment, in dem er ein solches Paket sieht. Einmal
     // je Programmlauf genügt.
-    const SIM_PANEL = "amerlander/pxt-grove"
-    const SIM_KANAL = "iot"
+    // KEINE Namespace-Konstanten für die beiden Kanalnamen, und das ist kein
+    // Stilfrage. Sie standen hier als `const SIM_PANEL` / `const SIM_KANAL`
+    // NACH der Funktion, die sie benutzt, und pxt wertet Namespace-Initialisierer
+    // in Dateireihenfolge aus: Wird `emit` einmal früh aufgerufen, ist die
+    // Konstante noch `undefined`, und der Shim beschwert sich zu Recht mit
+    // „Expected type string but received type undefined". Ein Literal an der
+    // Stelle, an der es gebraucht wird, kann diesen Zustand nicht haben.
     let simPanelGestartet = false
 
     function simulatorHinaus(zeile: string): void {
         if (!istSimulator()) return
+        // Das Panel wird erst erzeugt, wenn ein Dashboard benannt ist.
+        //
+        // Der Editor legt das iframe in dem Moment an, in dem er das erste Paket
+        // auf dem Schlüsselkanal sieht — täte er das schon bei `IOT1:r:` (der
+        // allerersten Zeile jedes Programmlaufs), stünde beim Start immer erst
+        // „Kein Dashboard" da, und zwar auch bei Programmen, die nie eins
+        // nennen. Ein Panel, das sich zeigt, um sofort zu sagen, dass es nichts
+        // zu zeigen hat, ist schlechter als keins.
+        //
+        // `referenz` ist genau die Bedingung, unter der auch `sendeHallo` die
+        // `s:`- und `h:`-Zeile überhaupt herausgibt — dieselbe Schwelle, damit
+        // Panel und Anmeldung nicht auseinanderlaufen können.
         if (!simPanelGestartet) {
+            if (referenz == "") return
             simPanelGestartet = true
-            control.simmessages.send(SIM_PANEL, undefined)
+            control.simmessages.send("amerlander/pxt-grove", undefined)
+            hoereSimulator()
         }
-        control.simmessages.send(SIM_KANAL, Buffer.fromUTF8(zeile))
+        control.simmessages.send("iot", Buffer.fromUTF8(zeile))
+    }
+
+    let simLauscht = false
+
+    /**
+     * Der Rückweg: Was das Panel schickt, ist für das Programm dasselbe wie
+     * eine Zeile von der seriellen Leitung.
+     *
+     * Ohne das ist der Simulator taub — `lese`, `beiWert` und die Uhrzeit
+     * blieben leer, während das Panel daneben die Werte anzeigt, die es gerade
+     * vom Server geholt hat. Das Panel schickt sie als ganz normale
+     * `IOT1:v:`-Zeilen; es gibt keinen zweiten Dialekt für den Simulator.
+     *
+     * Der Weg dorthin läuft ohne Campus: Das Panel schickt sein Paket an das
+     * Eltern-Fenster, der Simulator-Treiber verteilt Broadcast-Pakete an alle
+     * Rahmen, und hier kommt es an.
+     */
+    function hoereSimulator(): void {
+        if (simLauscht) return
+        simLauscht = true
+        control.simmessages.onReceived("iot", function (nachricht: Buffer) {
+            if (!nachricht) return
+            const text = nachricht.toString()
+            if (text == "") return
+            // Ein Paket darf mehrere Zeilen tragen — das Panel bündelt seine
+            // Werte, statt für jeden einzelnen ein Paket zu schicken.
+            const zeilen = text.split("\n")
+            for (let i = 0; i < zeilen.length; i++) {
+                const zeile = zeilen[i].replaceAll("\r", "")
+                if (zeile != "") empfangeZeile(zeile)
+            }
+        })
     }
 
     // ── Nahtstelle für Zusatzkanäle (BLE) ───────────────────────────────────
