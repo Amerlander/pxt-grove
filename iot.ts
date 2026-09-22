@@ -231,6 +231,22 @@ namespace iot {
     let halloFaellig = false
 
     // Sendepuffer (parallele Felder statt Objekten: kein Allozieren je Punkt)
+    /**
+     * Feed-Schlüssel, deren SCHREIBWEISE schon hinausgegangen ist.
+     *
+     * Der Schlüssel ist kleingeschrieben (`feedText`), weil „Licht" und
+     * „licht" dieselbe Messreihe sein müssen. Damit geht aber verloren, wie das
+     * Kind sie genannt hat — auf dem Dashboard stand danach „licht", und das
+     * ist nicht das, was im Block steht. Die Schreibweise reist deshalb einmal
+     * je Messreihe als eigene Zeile mit; der Server nimmt sie als Beschriftung,
+     * wenn er den Feed neu anlegt, und rührt eine vorhandene nie an.
+     *
+     * Einmal je Programmlauf, nicht je Datenpunkt: Die Beschriftung ändert sich
+     * nicht, und eine zweite Zeile je Wert wäre auf einer 20-Byte-Leitung teuer
+     * bezahlte Wiederholung.
+     */
+    let nFeeds: string[] = []
+
     let pFeed: string[] = []
     let pWert: string[] = []
     let pZiel: string[] = []
@@ -564,6 +580,7 @@ namespace iot {
     //% block="sende $feed = $wert || an $ziel"
     //% expandableArgumentMode="toggle"
     //% feed.defl="temperatur"
+    //% feed.shadow="iot_feed_name"
     //% ziel.shadow="iot_ziel"
     //% group="Senden"
     //% weight=90 blockGap=8
@@ -581,6 +598,7 @@ namespace iot {
     //% block="sende Text $feed = $wert || an $ziel"
     //% expandableArgumentMode="toggle"
     //% feed.defl="zustand"
+    //% feed.shadow="iot_feed_name"
     //% wert.defl="hallo"
     //% ziel.shadow="iot_ziel"
     //% group="Senden"
@@ -606,6 +624,11 @@ namespace iot {
     //% block="wenn $auswahl gesendet"
     //% draggableParameters="reporter"
     //% auswahl.defl=""
+    // BEWUSST OHNE `auswahl.shadow="iot_feed_name"`, anders als bei jedem
+    // anderen Feed-Feld: Hier heißt leer „jeder Feed", und genau das ist die
+    // Vorgabe. Ein vorplatziertes Dropdown könnte diesen Fall gar nicht
+    // ausdrücken — es würde den Block stillschweigend auf eine einzelne
+    // Messreihe verengen, und zwar auf die erste, die zufällig oben steht.
     //% group="Senden"
     //% weight=84 blockGap=8
     export function beiGesendet(
@@ -657,6 +680,7 @@ namespace iot {
         const schluessel = feedText(feed)
         if (schluessel == "") return
         starte()
+        meldeSchreibweise(schluessel, feldText(feed))
         if (pFeed.length >= PUFFER_MAX) {
             // Bei Überlauf fliegt der älteste: der Trend bleibt erhalten,
             // der aktuelle Wert erst recht.
@@ -691,6 +715,20 @@ namespace iot {
         if (pFeed.length >= PUFFER_MAX) sofort = true
     }
 
+    /**
+     * Sagt einmal, wie diese Messreihe geschrieben wird.
+     *
+     * Nur wenn sich Schreibweise und Schlüssel unterscheiden — bei „temperatur"
+     * gibt es nichts zu erzählen, und eine Zeile, die nichts hinzufügt, ist auf
+     * dieser Leitung eine Zeile zu viel.
+     */
+    function meldeSchreibweise(schluessel: string, wieGetippt: string): void {
+        if (wieGetippt == schluessel) return
+        if (nFeeds.indexOf(schluessel) >= 0) return
+        nFeeds.push(schluessel)
+        emit(WIRE + "n:" + schluessel + ":" + wieGetippt)
+    }
+
     // ── Blöcke: Empfangen ────────────────────────────────────────────────────
 
     /**
@@ -701,6 +739,7 @@ namespace iot {
     //% block="wenn $feed von $quelle empfangen"
     //% draggableParameters="reporter"
     //% feed.defl="temperatur"
+    //% feed.shadow="iot_feed_name"
     //% quelle.shadow="iot_wer"
     //% group="Empfangen"
     //% weight=80 blockGap=8
@@ -736,6 +775,7 @@ namespace iot {
     //% block="wenn Text $feed von $quelle empfangen"
     //% draggableParameters="reporter"
     //% feed.defl="nachricht"
+    //% feed.shadow="iot_feed_name"
     //% quelle.shadow="iot_wer"
     //% group="Empfangen"
     //% weight=79 blockGap=8
@@ -819,6 +859,7 @@ namespace iot {
     //% block="lese $feed || von $von an $an"
     //% expandableArgumentMode="toggle"
     //% feed.defl="temperatur"
+    //% feed.shadow="iot_feed_name"
     //% von.shadow="iot_wer"
     //% an.shadow="iot_wer"
     //% group="Empfangen"
@@ -841,6 +882,7 @@ namespace iot {
     //% block="lese Text $feed || von $von an $an"
     //% expandableArgumentMode="toggle"
     //% feed.defl="nachricht"
+    //% feed.shadow="iot_feed_name"
     //% von.shadow="iot_wer"
     //% an.shadow="iot_wer"
     //% group="Empfangen"
@@ -1107,7 +1149,13 @@ namespace iot {
                 basic.pause(100)
                 holeAusAblage()
                 verteileEmpfang()
-                if (halloFaellig) { halloFaellig = false; sendeHallo() }
+                if (halloFaellig) {
+                    halloFaellig = false
+                    // Ein neuer Host hat die Schreibweisen nie gehört: beim
+                    // nächsten Gebrauch jeder Messreihe gehen sie wieder raus.
+                    nFeeds = []
+                    sendeHallo()
+                }
                 const jetzt = control.millis()
                 if (jetzt < naechsterVersuchMs) continue
                 if (sofort || jetzt >= naechsterFlushMs) {
