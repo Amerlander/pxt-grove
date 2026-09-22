@@ -745,14 +745,16 @@ namespace iot {
         pWert.push(wert)
         pZiel.push(zielFeld)
         pZeit.push(control.millis())
-        // Der eigene Wert geht sofort in den Zwischenspeicher, nicht erst wenn
-        // er über den Server zurückkäme. Sonst zeigt „lese tmp" direkt nach
-        // „sende tmp" den alten Wert — eine Runde über Server und nächste
-        // Anfrage später wäre er da, und genau das sieht wie ein Fehler aus.
-        // Der Server braucht eigene Zeilen deshalb nie zurückzuschicken.
+        // Der eigene Wert wird sofort behandelt, nicht erst wenn er über den
+        // Server zurückkäme. Sonst zeigt „lese tmp" direkt nach „sende tmp" den
+        // alten Wert — eine Runde über Server und nächste Anfrage später wäre
+        // er da, und genau das sieht wie ein Fehler aus. Der Server braucht
+        // eigene Zeilen deshalb nie zurückzuschicken.
         //
-        // NUR der Zwischenspeicher: `wenn … empfangen` ist ein Auslöser für
-        // EINGEHENDE Werte und darf nicht auf der eigenen Ausgabe feuern.
+        // Und zwar als vollwertiger Empfang, nicht nur als Zwischenspeicher:
+        // „alle" heißt alle, mich eingeschlossen — sonst wäre es dasselbe wie
+        // „alle außer mir", das es daneben gibt. Welche Rümpfe daraufhin
+        // laufen, entscheidet wie immer `passt`; siehe `merkeEigenen`.
         merkeEigenen(schluessel, wert, zielFeld)
         // Takt "sofort": nicht auf den nächsten Zeitpunkt warten, sondern beim
         // nächsten Schleifendurchlauf raus.
@@ -1495,12 +1497,38 @@ namespace iot {
     }
 
     /**
-     * Ein selbst gesendeter Wert, damit er sofort lesbar ist. Geht NICHT in die
-     * Empfangsschlange: `wenn … empfangen` ist ein Auslöser für eingehende
-     * Werte.
+     * Ein selbst gesendeter Wert: sofort lesbar — UND ein Empfang.
+     *
+     * Hier stand einmal „Geht NICHT in die Empfangsschlange: `wenn … empfangen`
+     * ist ein Auslöser für eingehende Werte." Das klingt vernünftig und ist
+     * trotzdem falsch, und zwar nicht ein bisschen: Die Blockauswahl
+     * unterscheidet ausdrücklich zwischen „alle" und „alle außer mir". Schließt
+     * „alle" den eigenen Absender aus, sind die beiden Zeilen dasselbe, und
+     * eine von beiden ist eine Lüge. Ein Kind, das „alle" wählt und dann auf
+     * seinem eigenen Gerät nichts passieren sieht, hat keinen Fehler gemacht —
+     * es hat gelesen, was dasteht.
+     *
+     * Der Filter dafür existiert längst und musste nicht angefasst werden:
+     * `verteileEmpfang` prüft jeden Rumpf mit `passt(zVon[i], von)`, und mit
+     * `von = meineNummer()` fällt jede der fünf Auswahlmöglichkeiten von selbst
+     * richtig aus — „alle" und „nur dieses Gerät" feuern, „alle außer mir",
+     * „andere Geräte" und „Dashboard" nicht. Deshalb ist die Änderung EINE
+     * Zeile und kein Sonderfall.
+     *
+     * LOKAL, nicht über den Server. Der Server schickt eigene Werte in keinem
+     * Umfang zurück — auch bei „alle" nicht —, und das bleibt richtig: Ein Echo
+     * käme eine Runde zu spät und trüge einen Wert, den das Gerät schon hat.
+     * Genau deshalb kann es hier auch kein Doppelfeuern geben; diese Stelle ist
+     * die einzige Quelle für den eigenen Absender.
+     *
+     * Was damit möglich wird, ist eine Rückkopplung: ein Rumpf, der auf denselben
+     * Feed sendet, auf den er hört, löst sich selbst wieder aus. Das ist die
+     * gleiche Sorte Programm wie eine `dauerhaft`-Schleife ohne Pause — der
+     * Block sagt „wenn Wert empfangen (von allen)", es wurde einer gesendet,
+     * also passiert, was dasteht.
      */
     function merkeEigenen(feed: string, roh: string, an: string): void {
-        schreibeCache(feed, roh, meineNummer(), an)
+        nimmAn(feed, roh, meineNummer(), an)
     }
 
     function nimmAn(feed: string, roh: string, von: string, an: string): void {
