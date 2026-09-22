@@ -197,9 +197,9 @@ namespace iot {
     let geraeteNummer = ""
 
     // Was im Protokoll steht, wenn in einem „von"/„an"-Feld eine Vorgabe
-    // gewählt ist. Der Stern kann in keiner Geräte-ID vorkommen (fünf
-    // Buchstaben, oder „mini-…"/„sim-…" aus dem Campus), also kann eine
-    // getippte ID mit keiner Vorgabe kollidieren.
+    // gewählt ist. Der Stern kann in keiner Geräte-ID vorkommen — die sind
+    // ausnahmslos Zahlen (0 Dashboard, positiv ein mini, negativ ein
+    // Simulator) —, also kann eine getippte ID mit keiner Vorgabe kollidieren.
     const WER_ALLE = ""
     const WER_DASHBOARD = "0"
     const WER_ANDERE = "*g"
@@ -1029,7 +1029,18 @@ namespace iot {
             // Vorzeichenlos: ohne `>>> 0` kippt eine Nummer mit gesetztem
             // obersten Bit ins Negative — dieselbe Falle wie im Namen.
             const n = control.deviceSerialNumber() >>> 0
-            geraeteNummer = istSimulator() ? "sim-" + n : "" + n
+            // DAS VORZEICHEN SAGT „Simulator", nicht ein Präfix.
+            //
+            // Vorher stand hier "sim-" + n. Das machte aus der Kennung einen
+            // Text, den jede Stelle der Kette einzeln verstehen musste, und
+            // lange Kennungen kosten auf der seriellen Leitung echte Bytes:
+            // Der Empfangspuffer fasst 20, und "IOT1:v:sim-1722012630::Licht:0"
+            // sind 30. Mit dem Vorzeichen ist jede Kennung im ganzen Stapel
+            // eine Zahl — 0 das Dashboard, positiv ein echter mini, negativ ein
+            // Simulator, leer „alle". Wer die simulierten je aussortieren will,
+            // fragt `>= 0` und braucht keinen Sonderfall; eingebaut ist ein
+            // solcher Filter ausdrücklich NICHT: Ein Simulator ist ein Gerät.
+            geraeteNummer = istSimulator() ? "-" + n : "" + n
         }
         return geraeteNummer
     }
