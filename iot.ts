@@ -556,17 +556,23 @@ namespace iot {
      * @param feed nur für diese Messreihe, leer für alle
      */
     //% blockId=iot_bei_gesendet
-    //% block="wenn $feed gesendet"
+    //% block="wenn $auswahl gesendet"
     //% draggableParameters="reporter"
-    //% feed.defl=""
+    //% auswahl.defl=""
     //% group="Senden"
     //% weight=84 blockGap=8
     export function beiGesendet(
-        feed: string,
+        auswahl: string,
         handler: (feed: string, wert: number, an: string) => void
     ): void {
         starte()
-        gFeeds.push(feldText(feed))
+        // `auswahl`, nicht `feed` — derselbe Grund wie bei `quelle` in
+        // `beiWert`: `draggableParameters` legt für JEDEN Rumpf-Parameter einen
+        // Eingang HANDLER_DRAG_PARAM_<name> an, und der Rumpf hat `feed`
+        // bereits. Zwei gleich benannte Eingänge lässt Blockly nicht zu — es
+        // verwirft den ziehbaren, und der Rumpf kam ohne Parameter heraus
+        // (`function () {}` statt `function (feed, wert, an) {}`).
+        gFeeds.push(feedText(auswahl))
         gHandler.push(handler)
     }
 
@@ -601,7 +607,7 @@ namespace iot {
     }
 
     function lege(feed: string, wert: string, ziel: string): void {
-        const schluessel = feldText(feed)
+        const schluessel = feedText(feed)
         if (schluessel == "") return
         starte()
         if (pFeed.length >= PUFFER_MAX) {
@@ -670,7 +676,7 @@ namespace iot {
         // Rumpf-Parameter zuletzt steht — optional davor geht nicht.
         const vonFeld = feldText(quelle)
         merkeLeseWunsch(vonFeld)
-        zFeeds.push(feldText(feed))
+        zFeeds.push(feedText(feed))
         zVon.push(vonFeld)
         zHandler.push(handler)
     }
@@ -696,7 +702,7 @@ namespace iot {
         // Parameter `von` schon.
         const vonFeld = feldText(quelle)
         merkeLeseWunsch(vonFeld)
-        tFeeds.push(feldText(feed))
+        tFeeds.push(feedText(feed))
         tVon.push(vonFeld)
         tHandler.push(handler)
     }
@@ -773,7 +779,7 @@ namespace iot {
     export function lese(feed: string, von?: string, an?: string): number {
         const vonFeld = feldText(von)
         merkeLeseWunsch(vonFeld)
-        const i = suche(feldText(feed), vonFeld, feldText(an))
+        const i = suche(feedText(feed), vonFeld, feldText(an))
         if (i < 0) return 0
         return cIstZahl[i] ? cZahl[i] : 0
     }
@@ -795,7 +801,7 @@ namespace iot {
     export function leseText(feed: string, von?: string, an?: string): string {
         const vonFeld = feldText(von)
         merkeLeseWunsch(vonFeld)
-        const i = suche(feldText(feed), vonFeld, feldText(an))
+        const i = suche(feedText(feed), vonFeld, feldText(an))
         if (i < 0) return ""
         return cText[i]
     }
@@ -1177,7 +1183,7 @@ namespace iot {
             if (c < 0) return
             const von = rest.substr(0, a).trim()
             const an = rest.substr(a + 1, b - a - 1).trim()
-            const feed = rest.substr(b + 1, c - b - 1).trim()
+            const feed = feedText(rest.substr(b + 1, c - b - 1))
             const wert = rest.substr(c + 1, rest.length - c - 1)
             if (feed == "") return
             setzeZustand(IotStatus.Verbunden)
@@ -1625,6 +1631,19 @@ namespace iot {
      * Feld- und Zielnamen dürfen keinen Doppelpunkt tragen, sonst verrutscht
      * die Zeile. Feedschlüssel sind serverseitig ohnehin auf [a-z0-9_-] begrenzt.
      */
+    /**
+     * Ein Feed-Name, normalisiert.
+     *
+     * Kleingeschrieben, weil der Server Feed-Schlüssel auf [a-z0-9_-] begrenzt:
+     * "Licht" und "licht" sind dort dieselbe Messreihe, auf dem Gerät wären es
+     * zwei — und das fällt niemandem auf, es fehlt nur die Hälfte der Werte.
+     * Ein Kind, das den Namen einmal groß und einmal klein tippt, hat keinen
+     * Fehler gemacht.
+     */
+    function feedText(s: string): string {
+        return feldText(s).toLowerCase()
+    }
+
     function feldText(s: string): string {
         if (!s) return ""
         return einzeilig(s).replaceAll(":", "_").trim()
