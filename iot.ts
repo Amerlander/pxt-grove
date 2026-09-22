@@ -315,6 +315,47 @@ namespace iot {
         legeInAblage(zeile)
         serial.writeString(zeile)
         serial.writeString("\r\n")
+        // Und, falls angemeldet, über den Zusatzkanal — bei BLE ist das der
+        // einzige Weg, auf dem die Zeile den Host überhaupt erreicht. Der Host
+        // entdoppelt, was ihn über zwei Wege erreicht, also darf hier ruhig
+        // alles hinaus.
+        if (zusatzKanal) zusatzKanal(zeile)
+    }
+
+    // ── Nahtstelle für Zusatzkanäle (BLE) ───────────────────────────────────
+    //
+    // Über BLE erreicht KEINES der beiden Rohre den Host: Die RAM-Ablage hängt
+    // am Debug-Port des USB-Kabels, und `serial.writeString` schreibt auf die
+    // UART-Leitung — der Host hört bei BLE aber am Nordic-UART-Dienst, und den
+    // speist `serial` nicht. Deshalb kam über BLE noch nie eine IoT-Zeile an.
+    //
+    // Der Dienst gehört aber nicht hierher: `bluetooth` ist in pxt eine
+    // Übersetzungszeit-Abhängigkeit, die jedes Programm mit dieser Extension
+    // einen BLE-Stack kosten würde — und die sich mit `radio` nicht verträgt.
+    // Also die Umkehrung: Ein eigenes Zusatzpaket hängt von `grove` und
+    // `bluetooth` ab, startet den UART-Dienst und meldet sich hier an. Wer es
+    // nicht lädt, zahlt nichts.
+    let zusatzKanal: (zeile: string) => void = null
+
+    /**
+     * Meldet einen zweiten Ausgang an, über den jede IoT-Zeile zusätzlich
+     * hinausgeht. Gedacht für das BLE-Paket; mehr als einen gibt es nicht,
+     * weil es mehr als einen Fall nicht gibt.
+     */
+    //% blockHidden=true
+    export function setzeZusatzKanal(kanal: (zeile: string) => void): void {
+        zusatzKanal = kanal
+        starte()
+    }
+
+    /**
+     * Nimmt eine Zeile entgegen, die auf einem anderen Weg als der seriellen
+     * Leitung oder der Ablage hereinkam — beim BLE-Paket sind das die Daten
+     * des UART-Dienstes. Dieselbe Behandlung wie überall sonst.
+     */
+    //% blockHidden=true
+    export function empfangeVonAussen(zeile: string): void {
+        empfangeZeile(zeile)
     }
 
     /**
