@@ -30,6 +30,7 @@
  *   IOT1:l:<text>
  *   IOT1:h:<referenz>
  *   IOT1:r:<umfang>            wessen Werte ankommen sollen: d|g|a
+ *   IOT1:i:<seriennummer>      wer das Gerät ist (DEVICEID[1], dezimal)
  * Zeilenformat Campus → Gerät
  *   IOT1:v:<von>:<an>:<feed>:<wert>
  *   IOT1:t:<unixsekunden>:<zeitzone in minuten>
@@ -186,7 +187,14 @@ namespace iot {
 
     let referenz = ""
     let serverAdresse = "campus-api.calliope.cc"
+    // Anzeige (fünf Buchstaben) und Identität (die Seriennummer) sind zwei
+    // verschiedene Dinge, und das ist der Kern: Der Name ist eine Kaskade über
+    // fünf Stellen zur Basis 5, also 3125 Möglichkeiten. In einer Klasse mit 28
+    // Minis tragen zwei davon mit rund 11 % Wahrscheinlichkeit denselben Namen —
+    // und zwei Geräte mit derselben Kennung teilen sich im Dashboard eine
+    // Zeile, überschreiben sich gegenseitig, und nichts sagt es irgendwo.
     let geraeteId = ""
+    let geraeteNummer = ""
 
     // Was im Protokoll steht, wenn in einem „von"/„an"-Feld eine Vorgabe
     // gewählt ist. Der Stern kann in keiner Geräte-ID vorkommen (fünf
@@ -422,6 +430,9 @@ namespace iot {
         // Werte will ich?" kann nur dieses Programm beantworten. Hinter dem
         // `return` unten wäre sie in genau dem Fall verloren.
         emit(WIRE + "r:" + umfangCode())
+        // Wer hier spricht. Vor der Referenz, damit der Campus schon beim
+        // ersten Datenpunkt weiß, unter welcher Kennung er ihn ablegt.
+        emit(WIRE + "i:" + meineNummer())
         // Nichts sagen, solange nichts zu sagen ist. `uebertragung` läuft im
         // Blockstapel VOR `verbindeDashboard`; meldete es sich schon hier an,
         // bekäme der Campus zuerst eine leere Referenz samt Vorgabeserver und
@@ -750,6 +761,22 @@ namespace iot {
             geraeteId = istSimulator() ? "sim-" + name : name
         }
         return geraeteId
+    }
+
+    /**
+     * Die Kennung, unter der dieses Gerät gespeichert wird — `DEVICEID[1]` als
+     * Dezimalzahl, dieselbe Zahl, aus der der Name abgeleitet wird. Deshalb
+     * lässt sich die Anzeige jederzeit zurückrechnen, ohne dass die Kennung
+     * mehrdeutig sein muss.
+     */
+    function meineNummer(): string {
+        if (geraeteNummer == "") {
+            // Vorzeichenlos: ohne `>>> 0` kippt eine Nummer mit gesetztem
+            // obersten Bit ins Negative — dieselbe Falle wie im Namen.
+            const n = control.deviceSerialNumber() >>> 0
+            geraeteNummer = istSimulator() ? "sim-" + n : "" + n
+        }
+        return geraeteNummer
     }
 
     const KONSONANTEN = "zvgpt"
@@ -1130,9 +1157,12 @@ namespace iot {
      */
     function passt(muster: string, wert: string): boolean {
         if (muster == WER_ALLE) return true
-        if (muster == WER_ICH) return wert == meineGeraeteId()
-        if (muster == WER_OHNE_MICH) return wert != meineGeraeteId()
-        if (muster == WER_ANDERE) return wert != meineGeraeteId() && wert != WER_DASHBOARD
+        // Gegen die NUMMER, nicht den Namen: Im `from` der zurückkommenden
+        // Zeilen steht die Kennung, unter der der Server ablegt, und das ist
+        // die Seriennummer. Ein Vergleich gegen den Anzeigenamen träfe nie zu.
+        if (muster == WER_ICH) return wert == meineNummer()
+        if (muster == WER_OHNE_MICH) return wert != meineNummer()
+        if (muster == WER_ANDERE) return wert != meineNummer() && wert != WER_DASHBOARD
         return wert == muster
     }
 
@@ -1158,7 +1188,7 @@ namespace iot {
      * Werte.
      */
     function merkeEigenen(feed: string, roh: string, an: string): void {
-        schreibeCache(feed, roh, meineGeraeteId(), an)
+        schreibeCache(feed, roh, meineNummer(), an)
     }
 
     function nimmAn(feed: string, roh: string, von: string, an: string): void {
@@ -1282,7 +1312,7 @@ namespace iot {
         // Antwort erzeugen, sonst verhält sich ein hier getestetes Programm
         // anders, sobald das WLAN-Modul dran ist.
         let koerper = "{\"t\":" + jsonText(referenz)
-            + ",\"dev\":" + jsonText(meineGeraeteId())
+            + ",\"dev\":" + jsonText(meineNummer())
             + ",\"now\":" + jetzt
             + ",\"scope\":" + jsonText(umfangCode())
             + ",\"d\":["
