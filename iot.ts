@@ -393,6 +393,24 @@ namespace iot {
     // Stelle, an der es gebraucht wird, kann diesen Zustand nicht haben.
     let simPanelGestartet = false
 
+    /**
+     * `control.simmessages` ist ein Simulator-Shim: `pxt::sendMessage` und
+     * `pxt::peekMessageChannel` stehen NUR im JS-Simulator, in der C++-Laufzeit
+     * des Geräts gibt es sie nicht. Ein Aufruf aus Gerätecode heraus bricht
+     * deshalb die Übersetzung ab — „function not found: control.simmessages.send
+     * (shim=pxt::sendMessage)" — und zwar nicht nur hier, sondern gleich in
+     * `pxt_modules/core/controlmessage.ts` mit: Erst unsere Erwähnung zieht die
+     * Datei überhaupt in die Übersetzung; ohne sie fällt sie als ungenutzt raus.
+     *
+     * `//% shim=TD_NOOP` ist der Ausweg, den pxt dafür vorsieht: Auf dem Gerät
+     * wird der Aufruf zu nichts (der Rumpf wird gar nicht erst übersetzt), im
+     * Simulator läuft der TypeScript-Rumpf. pxt-jacdac macht es in `routing.ts`
+     * (`initSim`) genauso.
+     *
+     * Damit das trägt, muss ALLES, was `control.simmessages` berührt, hinter
+     * so einer Funktion liegen — deshalb ist auch `hoereSimulator` eine.
+     */
+    //% shim=TD_NOOP
     function simulatorHinaus(zeile: string): void {
         if (!istSimulator()) return
         // Das Panel wird erst erzeugt, wenn ein Dashboard benannt ist.
@@ -430,7 +448,11 @@ namespace iot {
      * Der Weg dorthin läuft ohne Campus: Das Panel schickt sein Paket an das
      * Eltern-Fenster, der Simulator-Treiber verteilt Broadcast-Pakete an alle
      * Rahmen, und hier kommt es an.
+     *
+     * `//% shim=TD_NOOP` aus demselben Grund wie bei `simulatorHinaus`: Der
+     * Rumpf darf nie in den Gerätecode geraten.
      */
+    //% shim=TD_NOOP
     function hoereSimulator(): void {
         if (simLauscht) return
         simLauscht = true
