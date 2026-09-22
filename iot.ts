@@ -293,24 +293,18 @@ namespace iot {
      */
     function emit(zeile: string): void {
         if (istSimulator() && !simSenden) return
-        // EIN Rohr, nicht beide. Die Ablage zuerst: Nimmt sie die Zeile an und
-        // holt der Host sie auch ab, ist die Sache erledigt.
+        // Beides, und zwar immer: Das Gerät kann nicht erkennen, ob am anderen
+        // Ende ein USB-Kabel oder eine BLE-Strecke hängt. Der Host entscheidet
+        // je Verbindung, welches Rohr er liest — über USB die RAM-Ablage (und
+        // überhört die IOT-Zeilen auf der seriellen Leitung), über BLE
+        // umgekehrt. Doppelt zu schreiben kostet fast nichts: Ohne lauschenden
+        // Host ist die Ablage ein memcpy in den eigenen Speicher.
         //
-        // Vorher ging jede Zeile bedingungslos in beide Rohre, begründet damit,
-        // dass das Gerät nicht sehen kann, ob am anderen Ende USB oder BLE
-        // hängt. Sehen kann es das wirklich nicht — aber es kann merken, ob
-        // jemand die Ablage leert, und das genügt. Das Doppelschreiben war
-        // nicht gratis: Auf dem Weg USB teilen sich Ablage und serielle
-        // Leitung denselben Debug-Port, und der Host-seitige serielle Leser
-        // hungerte zwischen den Speicherzugriffen aus — ein Hello kam als
-        // „ypc" an, danach „Transfer WAIT (target busy)" und die USB-Strecke
-        // fiel im Sekundentakt.
-        //
-        // Fällt die Ablage aus (niemand holt ab, oder der Platz ist noch
-        // belegt), trägt die serielle Leitung die Zeile wie zuvor. Damit
-        // bleiben BLE und der mini 2 unverändert: Dort gibt es diese Ablage
-        // nicht, `legeInAblage` sagt Nein, und alles läuft seriell.
-        if (legeInAblage(zeile)) return
+        // Die Ablage zuerst: Das Schreiben auf die serielle Leitung blockiert
+        // bis die Bytes draußen sind (bei 115200 Baud gute 3 ms je Zeile) und
+        // gibt dem Host damit von selbst die Zeit, die Ablage zu leeren, bevor
+        // die nächste Zeile kommt.
+        legeInAblage(zeile)
         serial.writeString(zeile)
         serial.writeString("\r\n")
     }
@@ -324,37 +318,19 @@ namespace iot {
      * Zeile eines Schülerprogramms hinge kurz fest, ohne dass das irgendwem
      * nützte.
      */
-    function legeInAblage(zeile: string): boolean {
-        // Beide Bedingungen, und in dieser Reihenfolge:
-        //
-        //   `schreibe` sagt, ob der Platz frei war. Ohne Host bleibt die erste
-        //   Zeile darin liegen und die zweite scheitert — „frei" allein heißt
-        //   also nicht, dass jemand zuhört.
-        //   `hoertJemandZu` ist gerastet („hat der Host jemals etwas geholt")
-        //   und taugt allein nicht als Dauerentscheidung: Wer USB abzieht und
-        //   auf BLE geht, hätte ihn weiter auf true und verstummte.
-        //
-        // Zusammen tragen sie: Ohne Host ist der gerastete Wert falsch, also
-        // geht alles seriell. Geht ein Host verloren, läuft der Platz voll,
-        // `schreibe` scheitert und ab der zweiten Zeile trägt wieder die
-        // serielle Leitung. Der Preis ist die eine Zeile, die in dem Moment in
-        // der Ablage liegen bleibt.
-        if (iotdap.schreibe(zeile)) return iotdap.hoertJemandZu()
-        if (!iotdap.hoertJemandZu()) return false
+    function legeInAblage(zeile: string): void {
+        if (iotdap.schreibe(zeile)) return
+        if (!iotdap.hoertJemandZu()) return
         // Ein Host, der zuhört, hat die vorige Zeile in wenigen Millisekunden
         // geholt. Ohne dieses kurze Warten ginge beim Leeren des Sendepuffers
         // (bis zu 24 Zeilen hintereinander) alles bis auf die erste verloren.
         for (let versuch = 0; versuch < ABLAGE_VERSUCHE; versuch++) {
             basic.pause(ABLAGE_WARTE_MS)
-            // Hier ist `hoertJemandZu` schon geprüft: Platz frei heißt jetzt
-            // wirklich „der Host nimmt sie".
-            if (iotdap.schreibe(zeile)) return true
+            if (iotdap.schreibe(zeile)) return
         }
-        // Aufgegeben — der Host ist zu zäh oder gerade weg. Nein sagen, dann
-        // trägt die serielle Leitung die Zeile. Besser als ein Programm, das an
-        // einem trägen Rückkanal hängen bleibt, und besser als eine verlorene
-        // Zeile.
-        return false
+        // Aufgegeben. Über USB fehlt diese eine Zeile — besser als ein Programm,
+        // das an einem zähen Rückkanal hängen bleibt. Auf die serielle Leitung
+        // geht sie gleich danach ohnehin noch raus.
     }
 
     /**
