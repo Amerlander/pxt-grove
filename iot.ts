@@ -182,7 +182,6 @@ namespace iot {
 
     let weg = IotWeg.Campus
     /** Stillgelegt: Der Simulator sendet immer mit — siehe `emit`. */
-    let simSenden = false
     let simGeprueft = false
     let simErkannt = false
 
@@ -414,18 +413,22 @@ namespace iot {
 
     /**
      * Legt fest, worüber die Daten laufen. Ohne diesen Block gilt „Campus".
+     *
+     * Der Schalter „im Simulator senden" ist weg. Er entschied, ob der
+     * Simulator überhaupt etwas hinausgibt — eine Frage, die niemanden mehr
+     * angeht: Der Simulator sendet jetzt immer mit, und zwar ZUSÄTZLICH. Er
+     * überträgt keine Hardware-Daten und ersetzt kein Gerät; er zeigt, was das
+     * Programm täte. Ein Schalter dafür war ein Testwerkzeug, das im Block
+     * eines Kindes stand.
+     *
      * @param art Campus (USB/BLE über den geöffneten Campus-Tab) oder WLAN
-     * @param sim auch im Simulator senden — Testwerkzeug, Vorgabe aus
      */
     //% blockId=iot_uebertragung
-    //% block="übertrage per $art || im Simulator senden $sim"
-    //% expandableArgumentMode="toggle"
-    //% sim.defl=false
+    //% block="übertrage per $art"
     //% group="Verbindung"
     //% weight=110 blockGap=8
-    export function uebertragung(art: IotWeg, sim: boolean = false): void {
+    export function uebertragung(art: IotWeg): void {
         weg = art
-        simSenden = sim
         starte()
         hoerZu()
         if (weg == IotWeg.Campus) halloFaellig = true
