@@ -997,9 +997,14 @@ namespace iot {
     }
 
     /**
-     * Die Kennung, unter der dieses Gerät im Dashboard auftaucht. Über den Weg
-     * „Campus" trägt der Campus die Seriennummer der Verbindung ein; dieser
-     * Wert ist dann nur Anzeige.
+     * Der NAME, unter dem dieses Gerät im Dashboard wiederzuerkennen ist.
+     *
+     * Ausdrücklich keine Kennung, auch wenn der Block so heißt: Abgelegt wird
+     * ausnahmslos unter der Zahl (`meineNummer`), und dieser Name wird aus
+     * genau dieser Zahl abgeleitet — er steht daneben, damit eine Klasse ihr
+     * Gerät findet, und geht nirgends ins Protokoll. Fünf Buchstaben sind
+     * 3125 Möglichkeiten; als Kennung benutzt teilen sich zwei Minis eine
+     * Zeile, und genau das hat schon einmal Werte verschluckt.
      */
     //% blockId=iot_geraete_id
     //% block="meine Geräte-ID"
