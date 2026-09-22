@@ -181,6 +181,7 @@ namespace iot {
     // ── Zustand ──────────────────────────────────────────────────────────────
 
     let weg = IotWeg.Campus
+    /** Stillgelegt: Der Simulator sendet immer mit — siehe `emit`. */
     let simSenden = false
     let simGeprueft = false
     let simErkannt = false
@@ -269,6 +270,8 @@ namespace iot {
     let eVon: string[] = []
     let eAn: string[] = []
 
+    let gFeeds: string[] = []
+    let gHandler: ((feed: string, wert: number, an: string) => void)[] = []
     let zFeeds: string[] = []
     let zVon: string[] = []
     let zHandler: ((wert: number, von: string, an: string) => void)[] = []
@@ -300,7 +303,20 @@ namespace iot {
      * Zeile — die Füllzeichen wären Teil des Wertes.
      */
     function emit(zeile: string): void {
-        if (istSimulator() && !simSenden) return
+        // Der Simulator sendet jetzt IMMER mit.
+        //
+        // Der Schalter „im Simulator senden" stand hier, weil pxt die Ausgaben
+        // des Simulators an keinen Host weiterreichte — er war laut Kommentar
+        // „der Anknüpfpunkt, sobald die Editor-Seite die Zeilen weitergibt".
+        // Mit dem simx-Panel (pxt-iot-sim) gibt es diese Seite, also ist der
+        // Grund weg: Ein Kind, das im Simulator programmiert, soll sehen, was
+        // sein Programm sendet, ohne vorher einen Schalter zu finden.
+        //
+        // Der Parameter bleibt trotzdem stehen und wird ignoriert. Ihn zu
+        // entfernen hieße, die Form des Übertragungsblocks zu ändern, und
+        // Blockly wirft einen gespeicherten Block weg, dessen Form es nicht
+        // mehr kennt — pxt erzeugt `main.ts` dann ohne ihn neu. Ein stiller
+        // Parameter ist billiger als ein verschwundener Block.
         // Beides, und zwar immer: Das Gerät kann nicht erkennen, ob am anderen
         // Ende ein USB-Kabel oder eine BLE-Strecke hängt. Der Host entscheidet
         // je Verbindung, welches Rohr er liest — über USB die RAM-Ablage (und
@@ -524,6 +540,34 @@ namespace iot {
     //% weight=89 blockGap=8
     export function sendeText(feed: string, wert: string, ziel?: string): void {
         lege(feed, einzeilig(wert), ziel ? ziel : "")
+    }
+
+    /**
+     * Läuft, wenn ein Wert dieses Programms wirklich hinausgegangen ist.
+     *
+     * Gedacht für die Rückmeldung an das Kind — ein Ton, ein Bild, ein Blinken
+     * bei jedem Senden. Deshalb hängt es am ABSCHICKEN und nicht am `sende`:
+     * `sende` legt nur in den Puffer, und was dort liegt, kann bei Überlauf
+     * noch verworfen werden. Ein Ton für einen Wert, der nie hinausging, wäre
+     * eine Lüge über den Zustand der Verbindung.
+     *
+     * Ein leerer Feed-Name meint jeden Feed. Der Rumpf bekommt Name und Wert,
+     * damit ein Programm mit mehreren Messreihen unterscheiden kann.
+     * @param feed nur für diese Messreihe, leer für alle
+     */
+    //% blockId=iot_bei_gesendet
+    //% block="wenn $feed gesendet"
+    //% draggableParameters="reporter"
+    //% feed.defl=""
+    //% group="Senden"
+    //% weight=84 blockGap=8
+    export function beiGesendet(
+        feed: string,
+        handler: (feed: string, wert: number, an: string) => void
+    ): void {
+        starte()
+        gFeeds.push(feldText(feed))
+        gHandler.push(handler)
     }
 
     /**
@@ -1155,6 +1199,7 @@ namespace iot {
             const ziel = pZiel.shift()
             pZeit.shift()
             emit(WIRE + "d:" + ziel + ":" + feed + ":" + wert)
+            meldeGesendet(feed, wert, ziel)
         }
         // Über den Campus gibt es keine Quittung; „verbunden" sagt erst der
         // Rückkanal (IOT1:t / IOT1:v). Also zurück in den Zustand von vorher:
@@ -1162,6 +1207,28 @@ namespace iot {
         // erfolgreichen Schreiben aber schlicht falsch, und ein Programm ohne
         // Sollwerte bekäme nie einen Rückkanal, der es korrigiert.
         setzeZustand(vorher)
+    }
+
+    /**
+     * Sagt den `wenn … gesendet`-Rümpfen Bescheid.
+     *
+     * Direkt aufgerufen und nicht über eine Warteschlange wie beim Empfangen:
+     * Hier läuft schon der Hintergrund-Fiber, es gibt also keinen fremden
+     * Fiber, den ein `zeige Zahl` im Rumpf anhalten könnte. Der Rumpf hält
+     * allerdings das Leeren des Puffers auf — wer dort eine Sekunde Ton
+     * abspielt, sendet den Rest des Puffers eine Sekunde später. Das ist die
+     * ehrlichere Variante: Die Alternative wäre, den Rumpf irgendwann später
+     * laufen zu lassen, und dann stimmte die Reihenfolge zum Senden nicht mehr.
+     */
+    function meldeGesendet(feed: string, wert: string, ziel: string): void {
+        if (gFeeds.length == 0) return
+        const zahl = parseFloat(wert)
+        const istZahl = wert != "" && !isNaN(zahl)
+        for (let i = 0; i < gFeeds.length; i++) {
+            // Leerer Name heißt „jeder Feed".
+            if (gFeeds[i] != "" && gFeeds[i] != feed) continue
+            gHandler[i](feed, istZahl ? zahl : 0, ziel)
+        }
     }
 
     function setzeZustand(neu: IotStatus): void {
@@ -1414,6 +1481,11 @@ namespace iot {
 
         // Erst jetzt aus dem Puffer nehmen: was nicht ankam, wird wiederholt.
         for (let k = 0; k < anzahl; k++) {
+            // Erst hier melden, nicht schon beim Zusammenbauen des Requests:
+            // Über WLAN steht die Quittung des Servers noch aus, solange die
+            // Punkte im Puffer liegen, und ein Ton für einen Wert, der gleich
+            // wiederholt wird, wäre falsch.
+            meldeGesendet(pFeed[0], pWert[0], pZiel[0])
             pFeed.shift(); pWert.shift(); pZiel.shift(); pZeit.shift()
         }
 
