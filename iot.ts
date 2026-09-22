@@ -335,6 +335,50 @@ namespace iot {
         // entdoppelt, was ihn über zwei Wege erreicht, also darf hier ruhig
         // alles hinaus.
         if (zusatzKanal) zusatzKanal(zeile)
+        // Und im Simulator zusätzlich als Simulator-Nachricht — siehe
+        // `simulatorHinaus`. Auf echter Hardware tut der Aufruf nichts.
+        simulatorHinaus(zeile)
+    }
+
+    // ── Der Weg aus dem Simulator heraus ────────────────────────────────────
+    //
+    // `serial.writeString` genügt hier NICHT, und genau das war der Grund,
+    // warum im Simulator nie etwas ankam — weder im Panel noch im Campus. pxt
+    // behandelt eine serielle Ausgabe des Simulators als `{type:"serial"}` und
+    // gibt sie an die serielle Konsole des Editors weiter; der Simulator-Driver
+    // hat für diesen Typ ausdrücklich `break; //handled elsewhere`
+    // (pxt/pxtsim/simdriver.ts). Sie verlässt den Editor also nie.
+    //
+    // Was ihn verlässt, ist ein `messagepacket`. Ein solches Paket geht in
+    // einem Rutsch an drei Stellen, und alle drei sind gewollt:
+    //
+    //   * an das simx-Panel (pxt-iot-sim), das auf dem Kanal `iot` mithört,
+    //   * an alle weiteren Simulator-Rahmen,
+    //   * an das Eltern-Fenster des Editors — also an den Campus-Tab, dessen
+    //     `handleSimulatorMessage` diesen Kanal längst kennt und bisher nur
+    //     deshalb nie etwas bekam, weil niemand sendete.
+    //
+    // Der Kanal heißt `iot`, nicht `amerlander/pxt-grove`. Der Repo-Name ist in
+    // pxt nur der SCHLÜSSEL in `simulatorExtensions`, mit dem der Editor das
+    // Panel-iframe startet; die Nachrichten selbst tragen den Kanal, auf den die
+    // Gegenseite hört. pxt-jacdac macht es genauso: `jacdac/pxt-jacdac` startet,
+    // `jacdac` trägt.
+    //
+    // Deshalb die leere Anmeldung zuerst: Ohne EIN Paket auf dem Schlüsselkanal
+    // gibt es kein Panel, an das die Zeilen gehen könnten — der Editor erzeugt
+    // das iframe erst in dem Moment, in dem er ein solches Paket sieht. Einmal
+    // je Programmlauf genügt.
+    const SIM_PANEL = "amerlander/pxt-grove"
+    const SIM_KANAL = "iot"
+    let simPanelGestartet = false
+
+    function simulatorHinaus(zeile: string): void {
+        if (!istSimulator()) return
+        if (!simPanelGestartet) {
+            simPanelGestartet = true
+            control.simmessages.send(SIM_PANEL, undefined)
+        }
+        control.simmessages.send(SIM_KANAL, Buffer.fromUTF8(zeile))
     }
 
     // ── Nahtstelle für Zusatzkanäle (BLE) ───────────────────────────────────
