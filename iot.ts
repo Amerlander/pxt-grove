@@ -652,7 +652,13 @@ namespace iot {
     //% blockId=iot_sende
     //% block="sende $feed = $wert || an $ziel"
     //% expandableArgumentMode="toggle"
-    //% feed.defl="temperatur"
+    // OHNE `feed.defl`, und das gilt für alle sechs Feed-Eingänge: Der Eingang
+    // trägt den Schatten `iot_feed_name`, und dessen Feld ist ein IotFeed-Wert,
+    // kein Text. Eine Zeichenkette als Vorgabe eines Aufklappfeldes ist kein
+    // gültiger Eintrag — pxt kann sie keinem Enum-Wert zuordnen, und das Feld
+    // landet irgendwo statt auf dem ersten Feed. Die anderen Schatten-Eingänge
+    // dieser Datei (`quelle`, `von`, `an` mit `iot_wer`/`iot_ziel`) haben aus
+    // demselben Grund seit jeher keine Vorgabe.
     //% feed.shadow="iot_feed_name"
     //% ziel.shadow="iot_ziel"
     //% group="Senden"
@@ -670,7 +676,6 @@ namespace iot {
     //% blockId=iot_sende_text
     //% block="sende Text $feed = $wert || an $ziel"
     //% expandableArgumentMode="toggle"
-    //% feed.defl="zustand"
     //% feed.shadow="iot_feed_name"
     //% wert.defl="hallo"
     //% ziel.shadow="iot_ziel"
@@ -813,7 +818,6 @@ namespace iot {
     //% blockId=iot_bei_wert
     //% block="wenn $feed von $quelle empfangen"
     //% draggableParameters="reporter"
-    //% feed.defl="temperatur"
     //% feed.shadow="iot_feed_name"
     //% quelle.shadow="iot_wer"
     //% group="Empfangen"
@@ -849,7 +853,6 @@ namespace iot {
     //% blockId=iot_bei_text
     //% block="wenn Text $feed von $quelle empfangen"
     //% draggableParameters="reporter"
-    //% feed.defl="nachricht"
     //% feed.shadow="iot_feed_name"
     //% quelle.shadow="iot_wer"
     //% group="Empfangen"
@@ -933,7 +936,6 @@ namespace iot {
     //% blockId=iot_lese_zahl
     //% block="lese $feed || von $von an $an"
     //% expandableArgumentMode="toggle"
-    //% feed.defl="temperatur"
     //% feed.shadow="iot_feed_name"
     //% von.shadow="iot_wer"
     //% an.shadow="iot_wer"
@@ -956,7 +958,6 @@ namespace iot {
     //% blockId=iot_lese_text
     //% block="lese Text $feed || von $von an $an"
     //% expandableArgumentMode="toggle"
-    //% feed.defl="nachricht"
     //% feed.shadow="iot_feed_name"
     //% von.shadow="iot_wer"
     //% an.shadow="iot_wer"
